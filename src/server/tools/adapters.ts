@@ -14,7 +14,6 @@ function commandAvailable(command: string): boolean {
 
 function status(adapter: ToolAdapter, config: AppConfig): ToolStatus {
   const command = config.tools[adapter.id].command;
-  const configuredSources = config.tools[adapter.id].sessionSources;
   const available = commandAvailable(command);
   return {
     toolId: adapter.id,
@@ -24,7 +23,7 @@ function status(adapter: ToolAdapter, config: AppConfig): ToolStatus {
     visibleInProjectUi: adapter.visibleInProjectUi,
     capabilities: adapter.capabilities,
     reason: available ? null : `未找到命令：${command}`,
-    sessionSources: configuredSources?.length ? configuredSources : adapter.defaultSessionSources()
+    sessionSources: sessionSourcesForAdapter(adapter, config)
   };
 }
 
@@ -199,4 +198,9 @@ export function adapterFor(toolId: ToolId): ToolAdapter {
 
 export function existingSources(sources: string[]): string[] {
   return sources.filter((source) => fs.existsSync(source));
+}
+
+export function sessionSourcesForAdapter(adapter: ToolAdapter, config: AppConfig): string[] {
+  const configuredSources = config.tools[adapter.id].sessionSources;
+  return configuredSources?.length ? configuredSources : adapter.defaultSessionSources();
 }

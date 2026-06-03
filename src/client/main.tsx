@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { agentsIntegrationNames, terminalModes } from "../shared/types.js";
 import type {
@@ -12,6 +12,7 @@ import type {
   ProjectDetail,
   ProjectDetailGroup,
   ProjectRepairCandidate,
+  RefreshMode,
   ScanCandidate,
   ScanDrive,
   TerminalMode,
@@ -20,6 +21,8 @@ import type {
 } from "../shared/types.js";
 import { client } from "./api.js";
 import "./styles.css";
+
+const AGENTS_DOWNLOAD_URL = "https://github.com/amtiYo/agents";
 
 interface ScanResultState {
   scanRunId: string;
@@ -54,12 +57,49 @@ function App() {
   const [scanStatus, setScanStatus] = useState("");
   const [selectedDriveRoot, setSelectedDriveRoot] = useState("");
   const [busy, setBusy] = useState(false);
+  const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
+  const selectedProjectIdRef = useRef<string | null>(null);
+  const queryRef = useRef("");
+  const autoReloadInFlightRef = useRef(false);
+  const autoReloadQueuedRef = useRef(false);
 
   useEffect(() => {
     void initialize();
   }, []);
+
+  useEffect(() => {
+    selectedProjectIdRef.current = selectedProjectId;
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    queryRef.current = query;
+  }, [query]);
+
+  useEffect(() => {
+    if (!bootstrap?.initialized || typeof EventSource === "undefined") return;
+
+    let reloadTimer: number | null = null;
+    const events = new EventSource(client.eventsUrl());
+    const scheduleReload = () => {
+      if (reloadTimer !== null) window.clearTimeout(reloadTimer);
+      reloadTimer = window.setTimeout(() => {
+        reloadTimer = null;
+        void reloadFromSessionEvent();
+      }, 200);
+    };
+
+    events.addEventListener("sessions:changed", scheduleReload);
+    events.onerror = () => {
+      // EventSource reconnects automatically; keep the UI quiet during transient local restarts.
+    };
+
+    return () => {
+      if (reloadTimer !== null) window.clearTimeout(reloadTimer);
+      events.close();
+    };
+  }, [bootstrap?.initialized]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -119,6 +159,30 @@ function App() {
       })
     );
     setAgentsStatuses(Object.fromEntries(entries));
+  }
+
+  async function reloadFromSessionEvent() {
+    if (autoReloadInFlightRef.current) {
+      autoReloadQueuedRef.current = true;
+      return;
+    }
+
+    autoReloadInFlightRef.current = true;
+    try {
+      await loadHome();
+      const projectId = selectedProjectIdRef.current;
+      if (projectId) {
+        await loadDetail(projectId, queryRef.current);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "自动更新会话失败");
+    } finally {
+      autoReloadInFlightRef.current = false;
+      if (autoReloadQueuedRef.current) {
+        autoReloadQueuedRef.current = false;
+        void reloadFromSessionEvent();
+      }
+    }
   }
 
   async function runAction(action: () => Promise<void>) {
@@ -193,6 +257,9 @@ function App() {
     </div>
   ) : (
     <div className="home-actions topbar-home-actions" aria-label="项目操作">
+      <button className="primary" type="button" disabled={busy} onClick={() => setNewProjectDialogOpen(true)}>
+        新建项目
+      </button>
       <div className="home-action-group">
         <span className="action-label">添加项目</span>
         <button className="primary" type="button" disabled={busy} onClick={() => void runAction(pickAndAddProject)}>
@@ -266,6 +333,15 @@ function App() {
         </div>
       </header>
 
+      {newProjectDialogOpen ? (
+        <NewProjectDialog
+          busy={busy}
+          onClose={() => setNewProjectDialogOpen(false)}
+          onPickDirectory={pickDirectory}
+          onCreate={(projectName, parentPath) => void runAction(() => createNewProject(projectName, parentPath))}
+        />
+      ) : null}
+
       {settingsOpen ? (
         <SettingsDialog
           bootstrap={bootstrap}
@@ -284,7 +360,7 @@ function App() {
           tools={tools}
           busy={busy}
           onClose={() => setRefreshDialogOpen(false)}
-          onRefresh={(toolIds) => void runAction(() => refreshSessions(toolIds))}
+          onRefresh={(toolIds, mode) => void runAction(() => refreshSessions(toolIds, mode))}
         />
       ) : null}
 
@@ -332,11 +408,13 @@ function App() {
     </main>
   );
 
-  async function refreshSessions(toolIds: ToolId[]) {
+  async function refreshSessions(toolIds: ToolId[], mode: RefreshMode) {
     setRefreshDialogOpen(false);
-    const result = await client.refreshSessions(toolIds);
+    const result = await client.refreshSessions(toolIds, mode);
     const addedText = result.addedProjectCount ? `，自动加入 ${result.addedProjectCount} 个项目` : "";
-    setMessage(`索引完成：${result.indexedCount} 条，会话跳过 ${result.skippedCount} 条，警告 ${result.warningCount} 条${addedText}`);
+    const removedText = result.removedSessionCount ? `，移除 ${result.removedSessionCount} 条` : "";
+    const modeText = mode === "full" ? "全量索引" : "增量索引";
+    setMessage(`${modeText}完成：${result.indexedCount} 条，会话跳过 ${result.skippedCount} 条，警告 ${result.warningCount} 条${removedText}${addedText}`);
     await loadHome();
     if (selectedProjectId) await loadDetail(selectedProjectId, query);
   }
@@ -435,6 +513,14 @@ function App() {
     await client.addProject(rootPath);
     await loadHome();
     setMessage("项目已添加");
+  }
+
+  async function createNewProject(projectName: string, parentPath: string) {
+    setMessage("正在创建项目...");
+    const created = await client.createDirectory(parentPath, projectName);
+    await addProject(created.path);
+    setNewProjectDialogOpen(false);
+    setMessage("项目已创建并添加");
   }
 
   async function pickAndAddProject() {
@@ -558,6 +644,93 @@ function Shell({ message }: { message: string }) {
   );
 }
 
+function NewProjectDialog({
+  busy,
+  onClose,
+  onPickDirectory,
+  onCreate
+}: {
+  busy: boolean;
+  onClose: () => void;
+  onPickDirectory: () => Promise<string | null>;
+  onCreate: (projectName: string, parentPath: string) => void;
+}) {
+  const [projectName, setProjectName] = useState("");
+  const [parentPath, setParentPath] = useState("");
+  const [picking, setPicking] = useState(false);
+  const [pickError, setPickError] = useState("");
+  const trimmedName = projectName.trim();
+  const trimmedParentPath = parentPath.trim();
+  const projectPathPreview = trimmedParentPath && trimmedName ? joinDisplayPath(trimmedParentPath, trimmedName) : trimmedParentPath;
+
+  async function chooseProjectDirectory() {
+    setPicking(true);
+    setPickError("");
+    try {
+      const selected = await onPickDirectory();
+      if (selected) setParentPath(selected);
+    } catch (error) {
+      setPickError(error instanceof Error ? error.message : "目录选择失败");
+    } finally {
+      setPicking(false);
+    }
+  }
+
+  return (
+    <div className="settings-backdrop" role="presentation">
+      <section className="settings-dialog new-project-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title">
+        <header>
+          <div>
+            <h2 id="new-project-title">新建项目</h2>
+          </div>
+          <button className="secondary" type="button" onClick={onClose} disabled={busy || picking}>
+            关闭
+          </button>
+        </header>
+        <div className="setting-section">
+          <label className="field wide">
+            <span>项目名称</span>
+            <input
+              type="text"
+              value={projectName}
+              disabled={busy}
+              onChange={(event) => setProjectName(event.target.value)}
+              placeholder="输入项目名称"
+            />
+          </label>
+          <div className="directory-chooser">
+            <label className="field current-root directory-value">
+              <span>项目目录</span>
+              <code aria-live="polite">{projectPathPreview || "尚未选择"}</code>
+            </label>
+            <button className="secondary" type="button" disabled={busy || picking} onClick={() => void chooseProjectDirectory()}>
+              {picking ? "选择中..." : "选择"}
+            </button>
+          </div>
+        </div>
+        {pickError ? (
+          <div className="field-error" role="alert">
+            {pickError}
+          </div>
+        ) : null}
+        <div className="settings-actions">
+          <button className="secondary" type="button" onClick={onClose} disabled={busy || picking}>
+            取消
+          </button>
+          <button
+            className="primary"
+            type="button"
+            disabled={busy || picking || !trimmedName || !trimmedParentPath}
+            onClick={() => onCreate(trimmedName, trimmedParentPath)}
+          >
+            确认
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function RefreshIndexDialog({
   tools,
   busy,
@@ -567,13 +740,14 @@ function RefreshIndexDialog({
   tools: ToolStatus[];
   busy: boolean;
   onClose: () => void;
-  onRefresh: (toolIds: ToolId[]) => void;
+  onRefresh: (toolIds: ToolId[], mode: RefreshMode) => void;
 }) {
   const refreshableTools = useMemo(
     () => tools.filter((tool) => tool.visibleInProjectUi && tool.capabilities.scanHistory),
     [tools]
   );
   const [selectedToolIds, setSelectedToolIds] = useState<ToolId[]>(() => refreshableTools.map((tool) => tool.toolId));
+  const [refreshMode, setRefreshMode] = useState<RefreshMode>("incremental");
 
   useEffect(() => {
     setSelectedToolIds(refreshableTools.map((tool) => tool.toolId));
@@ -590,9 +764,30 @@ function RefreshIndexDialog({
     <div className="settings-backdrop" role="presentation">
       <section className="settings-dialog refresh-dialog" role="dialog" aria-modal="true" aria-labelledby="refresh-index-title">
         <header>
-          <div>
-            <span className="eyebrow">索引</span>
+          <div className="refresh-dialog-title-row">
             <h2 id="refresh-index-title">刷新索引</h2>
+            <div className="refresh-mode-options" role="radiogroup" aria-label="刷新方式">
+              <label className="refresh-mode-option">
+                <input
+                  type="radio"
+                  name="refresh-mode"
+                  value="incremental"
+                  checked={refreshMode === "incremental"}
+                  onChange={() => setRefreshMode("incremental")}
+                />
+                <span>增量</span>
+              </label>
+              <label className="refresh-mode-option">
+                <input
+                  type="radio"
+                  name="refresh-mode"
+                  value="full"
+                  checked={refreshMode === "full"}
+                  onChange={() => setRefreshMode("full")}
+                />
+                <span>全量</span>
+              </label>
+            </div>
           </div>
           <button className="secondary" type="button" onClick={onClose} disabled={busy}>
             关闭
@@ -622,7 +817,7 @@ function RefreshIndexDialog({
             className="primary"
             type="button"
             disabled={busy || selectedToolIds.length === 0}
-            onClick={() => onRefresh(selectedToolIds)}
+            onClick={() => onRefresh(selectedToolIds, refreshMode)}
           >
             开始刷新
           </button>
@@ -743,6 +938,13 @@ function SettingsDialog({
               onClick={() => void chooseDirectory("agents")}
             >
               {pickingTarget === "agents" ? "选择中..." : "选择项目目录"}
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => window.open(AGENTS_DOWNLOAD_URL, "_blank", "noopener,noreferrer")}
+            >
+              前往下载
             </button>
           </div>
         </div>
@@ -1571,6 +1773,12 @@ function lastSegment(input: string): string {
   const normalized = input.replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]+/);
   return parts[parts.length - 1] || input;
+}
+
+function joinDisplayPath(parentPath: string, childName: string): string {
+  const trimmedParent = parentPath.replace(/[\\/]+$/, "");
+  const separator = parentPath.includes("/") && !parentPath.includes("\\") ? "/" : "\\";
+  return `${trimmedParent}${separator}${childName}`;
 }
 
 function agentsStatusError(projectId: string, rootPath: string, error: unknown): AgentsConfigSyncStatus {

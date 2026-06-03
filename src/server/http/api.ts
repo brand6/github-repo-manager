@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import express, { type Express, type Request, type Response } from "express";
-import { agentsIntegrationNames, isTerminalMode, type AgentsIntegrationName, type AppConfig, type ToolId } from "../../shared/types.js";
-import { adapterFor, listToolStatuses } from "../tools/adapters.js";
+import { agentsIntegrationNames, isTerminalMode, type AgentsIntegrationName, type AppConfig, type RefreshMode, type RefreshResult, type ToolId } from "../../shared/types.js";
+import { adapterFor, listToolStatuses, sessionSourcesForAdapter, toolAdapters } from "../tools/adapters.js";
 import { refreshAllSessions, refreshProjectSessions, refreshSessionFiles } from "../scanning/sessionScanner.js";
 import { deleteSession as deleteIndexedSession } from "../scanning/sessionDeletion.js";
 import { confirmScanCandidates, scanProjectCandidates } from "../scanning/projectScanner.js";
@@ -10,15 +10,17 @@ import { confirmRelocation, previewRelocation, relocateManagedProject } from "..
 import { confirmProjectRepair, listProjectRepairCandidates } from "../repair/projectRepair.js";
 import { repairQwenSourcePathForSession } from "../repair/qwenSourceRepair.js";
 import { getAgentsStatus, initializeAgentsProject, syncAgentsProject, updateAgentsIntegrations } from "../agents/agentsCli.js";
-import { listScanDrives, pickDirectory } from "../core/localFilesystem.js";
+import { createDirectory, listScanDrives, pickDirectory } from "../core/localFilesystem.js";
 import { displayPath, isPathInsideOrEqual, isStrictChildPath } from "../core/pathUtils.js";
 import type { AppContext } from "../appContext.js";
+import type { SessionIndexRunResult } from "../scanning/sessionIndexService.js";
 
 export function installApi(app: Express, context: AppContext): void {
   app.use(express.json({ limit: "1mb" }));
 
   app.use("/api", (request, response, next) => {
-    const token = request.header("x-local-api-token");
+    const eventStreamToken = request.path === "/events" && typeof request.query.token === "string" ? request.query.token : null;
+    const token = request.header("x-local-api-token") ?? eventStreamToken;
     if (token !== context.token) {
       response.status(401).json({ error: "invalid-local-token" });
       return;
@@ -55,8 +57,26 @@ export function installApi(app: Express, context: AppContext): void {
     next();
   });
 
+  app.get("/api/events", (_request, response) => {
+    context.eventHub().addClient(response);
+  });
+
   app.get("/api/config", (_request, response) => {
     response.json(context.config());
+  });
+
+  app.post("/api/local-filesystem/create-directory", (request, response) => {
+    const parentPath = stringBody(request, "parentPath");
+    const directoryName = stringBody(request, "directoryName");
+    if (!parentPath || !directoryName) {
+      response.status(400).json({ error: "parentPath and directoryName are required" });
+      return;
+    }
+    try {
+      response.status(201).json({ path: createDirectory(parentPath, directoryName) });
+    } catch (error) {
+      response.status(400).json({ error: "directory-create-failed", reason: error instanceof Error ? error.message : "directory-create-failed" });
+    }
   });
 
   app.patch("/api/config", (request, response) => {
@@ -262,13 +282,25 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
       return;
     }
-    response.json(
-      refreshAllSessions(
+    const mode = refreshModeBody(request);
+    if (mode === null) {
+      response.status(400).json({ error: "mode must be incremental or full" });
+      return;
+    }
+
+    if (mode === "full") {
+      const result = refreshAllSessions(
         context.database(),
         context.config(),
         toolIds ? { toolIds, autoAddProjects: true } : { autoAddProjects: true }
-      )
-    );
+      );
+      context.sessionIndexer().markSynced(toolIds ?? []);
+      response.json(result);
+      return;
+    }
+
+    const result = context.sessionIndexer().runOnce("manual", toolIds ? { toolIds } : {});
+    response.json(refreshResultFromIndexRun(context, result, toolIds));
   });
 
   app.delete("/api/sessions/:id", (request, response) => {
@@ -317,6 +349,7 @@ export function installApi(app: Express, context: AppContext): void {
     const scope = request.body?.scope === "drive" || request.body?.scope === "all-fixed" ? request.body.scope : "directory";
     const roots = Array.isArray(request.body?.roots) ? request.body.roots.filter((item: unknown) => typeof item === "string") : [];
     refreshAllSessions(context.database(), context.config());
+    context.sessionIndexer().markSynced();
     response.status(201).json(scanProjectCandidates(context.database(), { scope, roots }));
   });
 
@@ -447,6 +480,37 @@ function toolIdsBody(request: Request): ToolId[] | undefined | null {
     if (!toolIds.includes(item)) toolIds.push(item);
   }
   return toolIds;
+}
+
+function refreshModeBody(request: Request): RefreshMode | null {
+  if (request.body?.mode === undefined) return "full";
+  return request.body.mode === "incremental" || request.body.mode === "full" ? request.body.mode : null;
+}
+
+function refreshResultFromIndexRun(
+  context: AppContext,
+  result: SessionIndexRunResult | null,
+  toolIds: ToolId[] | undefined
+): RefreshResult {
+  const base = result?.refreshResult ?? emptySessionRefreshResult(context, toolIds);
+  return {
+    ...base,
+    addedProjectCount: result?.addedProjectCount ?? 0,
+    removedSessionCount: result?.removedSessionCount ?? 0
+  };
+}
+
+function emptySessionRefreshResult(context: AppContext, toolIds: ToolId[] | undefined): RefreshResult {
+  const scanRun = context.database().createScanRun("sessions-incremental", sessionRefreshRoots(context.config(), toolIds));
+  const completed = context.database().completeScanRun(scanRun.id, { indexedCount: 0, skippedCount: 0, warningCount: 0 });
+  return { scanRun: completed, indexedCount: 0, skippedCount: 0, warningCount: 0 };
+}
+
+function sessionRefreshRoots(config: AppConfig, toolIds: ToolId[] | undefined): string[] {
+  const selectedTools = toolIds?.length ? new Set<ToolId>(toolIds) : null;
+  return Object.values(toolAdapters)
+    .filter((adapter) => adapter.capabilities.scanHistory && (!selectedTools || selectedTools.has(adapter.id)))
+    .flatMap((adapter) => sessionSourcesForAdapter(adapter, config));
 }
 
 function agentsIntegrationsBody(request: Request): AgentsIntegrationName[] | null {

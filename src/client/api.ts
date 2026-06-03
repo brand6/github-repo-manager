@@ -5,12 +5,14 @@ import type {
   AppConfig,
   BootstrapState,
   DeleteSessionResult,
+  DirectoryCreateResponse,
   DirectoryPickResponse,
   LaunchResponse,
   ParserWarning,
   Project,
   ProjectDetail,
   ProjectRepairCandidate,
+  RefreshMode,
   ProjectRepairResult,
   RefreshResult,
   RelocationPreview,
@@ -20,17 +22,23 @@ import type {
   ToolStatus
 } from "../shared/types.js";
 
-const token = window.__LOCAL_API_TOKEN__ ?? "";
+function localApiToken(): string {
+  return window.__LOCAL_API_TOKEN__ ?? "";
+}
+
+function apiHeaders(headers: Record<string, string> = {}): Record<string, string> {
+  return { ...headers, "x-local-api-token": localApiToken() };
+}
 
 export async function apiGet<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: { "x-local-api-token": token } });
+  const response = await fetch(url, { headers: apiHeaders() });
   return handle<T>(response);
 }
 
 export async function apiPost<T>(url: string, body: unknown = {}): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-local-api-token": token },
+    headers: apiHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body)
   });
   return handle<T>(response);
@@ -39,14 +47,14 @@ export async function apiPost<T>(url: string, body: unknown = {}): Promise<T> {
 export async function apiPatch<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "PATCH",
-    headers: { "content-type": "application/json", "x-local-api-token": token },
+    headers: apiHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body)
   });
   return handle<T>(response);
 }
 
 export async function apiDelete<T>(url: string): Promise<T> {
-  const response = await fetch(url, { method: "DELETE", headers: { "x-local-api-token": token } });
+  const response = await fetch(url, { method: "DELETE", headers: apiHeaders() });
   return handle<T>(response);
 }
 
@@ -61,11 +69,14 @@ async function handle<T>(response: Response): Promise<T> {
 export const client = {
   bootstrap: () => apiGet<BootstrapState>("/api/bootstrap"),
   setDataDir: (dataDir: string) => apiPost<BootstrapState>("/api/bootstrap/data-dir", { dataDir }),
+  eventsUrl: () => `/api/events?token=${encodeURIComponent(localApiToken())}`,
   config: () => apiGet<AppConfig>("/api/config"),
   updateConfig: (config: Partial<Pick<AppConfig, "terminal" | "agents">>) => apiPatch<AppConfig>("/api/config", config),
   projects: () => apiGet<Project[]>("/api/projects"),
   drives: () => apiGet<ScanDrive[]>("/api/local-filesystem/drives"),
   pickDirectory: () => apiPost<DirectoryPickResponse>("/api/local-filesystem/pick-directory"),
+  createDirectory: (parentPath: string, directoryName: string) =>
+    apiPost<DirectoryCreateResponse>("/api/local-filesystem/create-directory", { parentPath, directoryName }),
   addProject: (rootPath: string, includeSubdirectories = false) =>
     apiPost<{ project: Project; mergedIntoParent: boolean; removedChildren: Project[] }>("/api/projects", {
       rootPath,
@@ -87,7 +98,8 @@ export const client = {
     apiPost<AgentsCommandResult>(`/api/projects/${id}/agents/sync`, { check, ...(rootPath ? { rootPath } : {}) }),
   updateAgentsIntegrations: (id: string, enabledIntegrations: AgentsIntegrationName[], rootPath?: string) =>
     apiPatch<AgentsCommandResult>(`/api/projects/${id}/agents/integrations`, { enabledIntegrations, ...(rootPath ? { rootPath } : {}) }),
-  refreshSessions: (toolIds?: string[]) => apiPost<RefreshResult>("/api/sessions/refresh", toolIds?.length ? { toolIds } : {}),
+  refreshSessions: (toolIds?: string[], mode: RefreshMode = "incremental") =>
+    apiPost<RefreshResult>("/api/sessions/refresh", { mode, ...(toolIds?.length ? { toolIds } : {}) }),
   deleteSession: (sessionId: string) => apiDelete<DeleteSessionResult>(`/api/sessions/${encodeURIComponent(sessionId)}`),
   tools: () => apiGet<ToolStatus[]>("/api/tools/status"),
   startScan: (roots: string[], scope: "directory" | "drive" | "all-fixed" = "directory") =>

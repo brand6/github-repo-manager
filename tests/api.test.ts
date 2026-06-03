@@ -60,6 +60,7 @@ describe("API", () => {
     const response = await request(app).get("/").expect(200);
     expect(response.text).toContain("window.__LOCAL_API_TOKEN__");
     expect(response.text).toContain(context.token);
+    expect(response.header["cache-control"]).toContain("no-store");
   });
 
   it("allows local filesystem helpers before the data directory is initialized", async () => {
@@ -79,6 +80,29 @@ describe("API", () => {
       process.env.APPDATA = previousAppData;
       process.env.LOCALAPPDATA = previousLocalAppData;
     }
+  });
+
+  it("creates a project directory through the local filesystem API", async () => {
+    directory = testDir("api-create-directory");
+    const parentRoot = path.join(directory, "workspace");
+    fs.mkdirSync(parentRoot, { recursive: true });
+    context = new AppContext(directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    const created = await request(app)
+      .post("/api/local-filesystem/create-directory")
+      .set("x-local-api-token", context.token)
+      .send({ parentPath: parentRoot, directoryName: "demo-project" })
+      .expect(201);
+
+    expect(created.body.path).toBe(path.join(parentRoot, "demo-project"));
+    expect(fs.statSync(created.body.path).isDirectory()).toBe(true);
+
+    await request(app)
+      .post("/api/local-filesystem/create-directory")
+      .set("x-local-api-token", context.token)
+      .send({ parentPath: parentRoot, directoryName: "..\\outside" })
+      .expect(400);
   });
 
   it("persists the terminal window mode setting", async () => {
@@ -304,6 +328,40 @@ describe("API", () => {
       sessionCount: 2
     });
     expect(projects.body.map((project: { rootPath: string }) => project.rootPath)).not.toContain(codexRoot);
+  });
+
+  it("refreshes only changed sources in incremental mode", async () => {
+    directory = testDir("api-refresh-incremental-mode");
+    const projectRoot = path.join(directory, "repo");
+    const sessionSource = path.join(directory, "codex-sessions");
+    const firstSource = path.join(sessionSource, "codex-first.jsonl");
+    const secondSource = path.join(sessionSource, "codex-second.jsonl");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(sessionSource, { recursive: true });
+    writeCodexSession(firstSource, projectRoot, "codex-first", "初始会话");
+
+    context = new AppContext(directory);
+    context.config().tools.codex.sessionSources = [sessionSource];
+    context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
+    pointMvpBToolsAtMissingSources(context, directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    await request(app)
+      .post("/api/sessions/refresh")
+      .set("x-local-api-token", context.token)
+      .send({ mode: "full", toolIds: ["codex"] })
+      .expect(200);
+
+    writeCodexSession(secondSource, projectRoot, "codex-second", "新增会话");
+
+    const refreshed = await request(app)
+      .post("/api/sessions/refresh")
+      .set("x-local-api-token", context.token)
+      .send({ mode: "incremental", toolIds: ["codex"] })
+      .expect(200);
+
+    expect(refreshed.body).toMatchObject({ indexedCount: 1, skippedCount: 0, warningCount: 0, addedProjectCount: 0 });
+    expect(context.database().listSessions().map((session) => session.nativeSessionId).sort()).toEqual(["codex-first", "codex-second"]);
   });
 
   it("deletes a JSONL-backed session and removes the source file", async () => {
@@ -1163,6 +1221,17 @@ function pointMvpBToolsAtMissingSources(appContext: AppContext, root: string): v
   appContext.config().tools.qwen.sessionSources = [path.join(root, "missing-qwen-sessions")];
   appContext.config().tools.qoder.sessionSources = [path.join(root, "missing-qoder-sessions")];
   appContext.config().tools.copilot.sessionSources = [path.join(root, "missing-copilot-sessions")];
+}
+
+function writeCodexSession(sourceFile: string, cwd: string, id: string, title: string): void {
+  fs.writeFileSync(
+    sourceFile,
+    JSON.stringify({
+      session_meta: { payload: { id, cwd } },
+      title,
+      timestamp: "2026-06-02T12:30:00Z"
+    })
+  );
 }
 
 function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, "id" | "toolId" | "nativeSessionId" | "sourceFile">): SessionEntry {

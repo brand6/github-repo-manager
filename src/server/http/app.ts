@@ -11,6 +11,13 @@ export interface CreateServerOptions {
   serveClient?: boolean;
 }
 
+const INDEX_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  Pragma: "no-cache",
+  Expires: "0"
+};
+
 export async function createHttpApp(context: AppContext, options: CreateServerOptions) {
   const app = express();
   installApi(app, context);
@@ -22,13 +29,13 @@ export async function createHttpApp(context: AppContext, options: CreateServerOp
   if (options.dev) {
     const { createServer } = await import("vite");
     const vite = await createServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: "custom"
     });
     app.use(vite.middlewares);
     app.use((request, response, next) => {
       serveDevIndex(vite, request.originalUrl, context.token)
-        .then((html) => response.status(200).set({ "Content-Type": "text/html" }).end(html))
+        .then((html) => response.status(200).set(INDEX_HEADERS).end(html))
         .catch(next);
     });
     return app;
@@ -38,7 +45,7 @@ export async function createHttpApp(context: AppContext, options: CreateServerOp
   app.use(express.static(clientDir, { index: false }));
   app.use((_request, response) => {
     const html = fs.readFileSync(path.join(clientDir, "index.html"), "utf8");
-    response.status(200).set({ "Content-Type": "text/html" }).end(injectToken(html, context.token));
+    response.status(200).set(INDEX_HEADERS).end(injectToken(html, context.token));
   });
 
   return app;

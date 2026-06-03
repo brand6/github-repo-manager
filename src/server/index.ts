@@ -14,6 +14,8 @@ const app = await createHttpApp(context, { dev: args.dev });
 const server = app.listen(args.port, "127.0.0.1", () => {
   const url = `http://127.0.0.1:${args.port}`;
   console.log(`Local AI project manager listening on ${url}`);
+  const startupTimer = setTimeout(() => context.startBackgroundServices(), 0);
+  startupTimer.unref?.();
 });
 
 server.on("error", (error: NodeJS.ErrnoException) => {

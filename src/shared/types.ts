@@ -1,4 +1,5 @@
 export type ToolId = "codex" | "claude" | "opencode" | "qwen" | "qoder" | "copilot";
+export type RefreshMode = "incremental" | "full";
 export const terminalModes = ["new-window", "per-tool", "per-project"] as const;
 export type TerminalMode = (typeof terminalModes)[number];
 export const agentsIntegrationNames = [
@@ -130,6 +131,10 @@ export interface DirectoryPickResponse {
   cancelled: boolean;
 }
 
+export interface DirectoryCreateResponse {
+  path: string;
+}
+
 export interface ProjectDetailGroup {
   key: string;
   label: string;
@@ -191,6 +196,7 @@ export interface RefreshResult {
   skippedCount: number;
   warningCount: number;
   addedProjectCount?: number;
+  removedSessionCount?: number;
 }
 
 export interface RelocationChange {

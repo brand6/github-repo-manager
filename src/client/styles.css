@@ -430,6 +430,44 @@ label,
   width: min(560px, 100%);
 }
 
+.refresh-dialog-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.refresh-mode-options {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.refresh-mode-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.refresh-mode-option input {
+  width: 16px;
+  min-height: auto;
+  flex: 0 0 auto;
+  accent-color: var(--primary);
+}
+
+.refresh-mode-option span {
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .tool-refresh-list {
   display: grid;
   gap: 10px;

@@ -26,6 +26,7 @@ const clientMock = vi.hoisted(() => ({
   updateConfig: vi.fn(),
   drives: vi.fn(),
   pickDirectory: vi.fn(),
+  createDirectory: vi.fn(),
   startScan: vi.fn(),
   addProject: vi.fn(),
   removeProject: vi.fn(),
@@ -71,6 +72,7 @@ describe("HomePage", () => {
     clientMock.updateAgentsIntegrations.mockResolvedValue(agentsCommandResultFixture());
     clientMock.drives.mockResolvedValue([{ root: "E:\\", label: "E:\\" }]);
     clientMock.pickDirectory.mockResolvedValue({ path: "E:\\picked", cancelled: false });
+    clientMock.createDirectory.mockResolvedValue({ path: "E:\\picked\\demo-project" });
     clientMock.setDataDir.mockResolvedValue({
       initialized: true,
       dataDir: "C:\\tmp\\github-repo-manager-next",
@@ -141,6 +143,7 @@ describe("HomePage", () => {
     expect(within(stats).getByText("2")).toBeInTheDocument();
     expect(within(stats).getByText("会话")).toBeInTheDocument();
     expect(within(stats).getByText("5")).toBeInTheDocument();
+    expect(within(topbar).getByRole("button", { name: "新建项目" })).toBeInTheDocument();
     expect(within(topbar).getByText("添加项目")).toBeInTheDocument();
     expect(within(topbar).getByRole("button", { name: "选择文件夹" })).toBeInTheDocument();
     expect(within(topbar).getByText("扫描项目")).toBeInTheDocument();
@@ -278,6 +281,20 @@ describe("HomePage", () => {
     expect(await screen.findByText("agents CLI 路径已更新")).toBeInTheDocument();
   });
 
+  it("opens the agents download page from settings", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+
+    const dialog = screen.getByRole("dialog", { name: "应用设置" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "前往下载" }));
+
+    expect(openSpy).toHaveBeenCalledWith("https://github.com/amtiYo/agents", "_blank", "noopener,noreferrer");
+    openSpy.mockRestore();
+  });
+
   it("opens a folder picker before adding a project", async () => {
     render(<App />);
 
@@ -287,6 +304,31 @@ describe("HomePage", () => {
     expect(clientMock.pickDirectory).toHaveBeenCalled();
     expect(await screen.findByText("项目已添加")).toBeInTheDocument();
     expect(clientMock.addProject).toHaveBeenCalledWith("E:\\picked");
+  });
+
+  it("creates a project from the new project dialog", async () => {
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
+
+    const dialog = screen.getByRole("dialog", { name: "新建项目" });
+    expect(within(dialog).getByLabelText("项目名称")).toBeInTheDocument();
+    expect(within(dialog).getByText("项目目录")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "确认" })).toBeDisabled();
+
+    fireEvent.change(within(dialog).getByLabelText("项目名称"), { target: { value: "demo-project" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择" }));
+
+    await waitFor(() => expect(clientMock.pickDirectory).toHaveBeenCalled());
+    expect(within(dialog).getByText("E:\\picked\\demo-project")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认" }));
+
+    await waitFor(() => expect(clientMock.createDirectory).toHaveBeenCalledWith("E:\\picked", "demo-project"));
+    expect(clientMock.addProject).toHaveBeenCalledWith("E:\\picked\\demo-project");
+    expect(await screen.findByText("项目已创建并添加")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "新建项目" })).not.toBeInTheDocument();
   });
 
   it("scans the selected drive without confirming candidates", async () => {
@@ -682,11 +724,32 @@ describe("HomePage", () => {
     fireEvent.click(screen.getByRole("button", { name: "刷新索引" }));
 
     const dialog = await screen.findByRole("dialog", { name: "刷新索引" });
+    const header = dialog.querySelector("header") as HTMLElement;
+    expect(within(header).getByRole("radiogroup", { name: "刷新方式" })).toBeInTheDocument();
+    expect(within(dialog).queryByText("索引")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("radio", { name: "增量" })).toBeChecked();
     fireEvent.click(within(dialog).getByRole("checkbox", { name: /codex/i }));
     fireEvent.click(within(dialog).getByRole("button", { name: "开始刷新" }));
 
-    await waitFor(() => expect(clientMock.refreshSessions).toHaveBeenCalledWith(["opencode"]));
-    expect(await screen.findByText("索引完成：2 条，会话跳过 0 条，警告 0 条，自动加入 1 个项目")).toBeInTheDocument();
+    await waitFor(() => expect(clientMock.refreshSessions).toHaveBeenCalledWith(["opencode"], "incremental"));
+    expect(await screen.findByText("增量索引完成：2 条，会话跳过 0 条，警告 0 条，自动加入 1 个项目")).toBeInTheDocument();
+  });
+
+  it("can run a full index refresh from the topbar dialog", async () => {
+    clientMock.tools.mockResolvedValue([toolStatusFixture("codex"), toolStatusFixture("opencode")]);
+    clientMock.refreshSessions.mockResolvedValue(refreshResultFixture(3, 0, 0, 0));
+
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "刷新索引" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "刷新索引" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "全量" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "开始刷新" }));
+
+    await waitFor(() => expect(clientMock.refreshSessions).toHaveBeenCalledWith(["codex", "opencode"], "full"));
+    expect(await screen.findByText("全量索引完成：3 条，会话跳过 0 条，警告 0 条")).toBeInTheDocument();
   });
 
   it("still renders project sessions when repair candidates fail to load", async () => {

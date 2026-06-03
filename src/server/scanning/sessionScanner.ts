@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Project, RefreshResult, ToolId } from "../../shared/types.js";
 import { AppDatabase } from "../storage/database.js";
-import { existingSources, toolAdapters } from "../tools/adapters.js";
+import { existingSources, sessionSourcesForAdapter, toolAdapters } from "../tools/adapters.js";
 import type { ToolAdapter } from "../tools/toolAdapter.js";
 import { parseOpencodeDatabaseFile } from "./opencodeDatabase.js";
 import { parseSessionFile } from "./sessionParser.js";
@@ -17,17 +17,28 @@ export interface RefreshAllSessionsOptions {
   autoAddProjects?: boolean;
 }
 
+export interface SessionSourceTarget {
+  toolId: ToolId;
+  sourceRoot: string;
+  sourceFile: string;
+}
+
+export interface RefreshSessionFilesOptions {
+  scope?: string;
+  missingSourceMessage?: string;
+}
+
 export function refreshAllSessions(database: AppDatabase, config: AppConfig, options: RefreshAllSessionsOptions = {}): RefreshResult {
   const selectedTools = options.toolIds?.length ? new Set<ToolId>(options.toolIds) : null;
   const adapters = Object.values(toolAdapters).filter((adapter) => {
     return adapter.capabilities.scanHistory && (!selectedTools || selectedTools.has(adapter.id));
   });
-  const scanRun = database.createScanRun("sessions", adapters.flatMap((adapter) => adapter.detect(config).sessionSources));
+  const scanRun = database.createScanRun("sessions", adapters.flatMap((adapter) => sessionSourcesForAdapter(adapter, config)));
   let indexedCount = 0;
   let skippedCount = 0;
 
   for (const adapter of adapters) {
-    const sources = existingSources(adapter.detect(config).sessionSources);
+    const sources = existingSources(sessionSourcesForAdapter(adapter, config));
     const result = scanAdapterSources(database, adapter, sources, scanRun.id);
     indexedCount += result.indexedCount;
     skippedCount += result.skippedCount;
@@ -70,7 +81,7 @@ export function refreshProjectSessions(database: AppDatabase, config: AppConfig,
   }
 
   for (const adapter of adapters) {
-    const sources = existingSources(adapter.detect(config).sessionSources);
+    const sources = existingSources(sessionSourcesForAdapter(adapter, config));
     for (const file of sources.flatMap((source) => sessionFiles(adapter, source))) {
       const key = targetKey(adapter.id, file);
       if (targets.has(key)) continue;
@@ -92,14 +103,39 @@ export function refreshProjectSessions(database: AppDatabase, config: AppConfig,
   return { scanRun: completed, indexedCount, skippedCount, warningCount };
 }
 
+export function listSessionSourceTargets(config: AppConfig, toolIds: ToolId[] = []): SessionSourceTarget[] {
+  const selectedTools = toolIds.length ? new Set<ToolId>(toolIds) : null;
+  const targets = new Map<string, SessionSourceTarget>();
+
+  for (const adapter of Object.values(toolAdapters)) {
+    if (!adapter.capabilities.scanHistory) continue;
+    if (selectedTools && !selectedTools.has(adapter.id)) continue;
+
+    for (const sourceRoot of existingSources(sessionSourcesForAdapter(adapter, config))) {
+      for (const sourceFile of sessionFiles(adapter, sourceRoot)) {
+        targets.set(targetKey(adapter.id, sourceFile), {
+          toolId: adapter.id,
+          sourceRoot,
+          sourceFile
+        });
+      }
+    }
+  }
+
+  return [...targets.values()].sort((a, b) => {
+    return a.toolId.localeCompare(b.toolId) || a.sourceFile.localeCompare(b.sourceFile);
+  });
+}
+
 export function refreshSessionFiles(
   database: AppDatabase,
-  targets: Array<{ toolId: ToolId; sourceFile: string }>
+  targets: Array<{ toolId: ToolId; sourceFile: string }>,
+  options: RefreshSessionFilesOptions = {}
 ): RefreshResult {
   const uniqueTargets = [
     ...new Map(targets.map((target) => [`${target.toolId}:${path.resolve(target.sourceFile)}`, target])).values()
   ];
-  const scanRun = database.createScanRun("relocation", uniqueTargets.map((target) => target.sourceFile));
+  const scanRun = database.createScanRun(options.scope ?? "relocation", uniqueTargets.map((target) => target.sourceFile));
   let indexedCount = 0;
   let skippedCount = 0;
 
@@ -113,7 +149,7 @@ export function refreshSessionFiles(
         toolId: target.toolId,
         sourceFile: target.sourceFile,
         errorType: "missing-source-file",
-        message: "Relocation source file was missing during scoped index rebuild",
+        message: options.missingSourceMessage ?? "Relocation source file was missing during scoped index rebuild",
         line: null
       });
       continue;
