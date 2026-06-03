@@ -17,6 +17,7 @@ import { App, HomePage, ProjectDetailView } from "../src/client/main.js";
 
 const clientMock = vi.hoisted(() => ({
   bootstrap: vi.fn(),
+  eventsUrl: vi.fn(),
   projects: vi.fn(),
   detail: vi.fn(),
   tools: vi.fn(),
@@ -55,6 +56,7 @@ describe("HomePage", () => {
       defaultDataDir: "C:\\tmp\\github-repo-manager",
       overriddenByArg: true
     });
+    clientMock.eventsUrl.mockReturnValue("/api/events?token=test");
     clientMock.projects.mockResolvedValue([]);
     clientMock.detail.mockResolvedValue(detailFixture(projectFixture("E:\\old")));
     clientMock.tools.mockResolvedValue([]);
@@ -628,6 +630,52 @@ describe("HomePage", () => {
     expect(screen.getByRole("button", { name: "恢复" })).not.toBeDisabled();
   });
 
+  it("keeps project warnings scoped during automatic session reloads", async () => {
+    const project = { ...projectFixture("E:\\tool-butler"), id: "project-tool-butler", sessionCount: 1 };
+    const listeners = new Map<string, EventListenerOrEventListenerObject>();
+
+    class MockEventSource {
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor(readonly url: string) {}
+
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        listeners.set(type, listener);
+      }
+
+      close() {}
+    }
+
+    vi.stubGlobal("EventSource", MockEventSource);
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.warnings.mockResolvedValue([]);
+
+    try {
+      render(<App />);
+
+      await screen.findByText("tool-butler");
+      fireEvent.click(screen.getByRole("button", { name: "打开" }));
+      await screen.findByText("当前项目根目录");
+      clientMock.projects.mockClear();
+      clientMock.warnings.mockClear();
+
+      const listener = listeners.get("sessions:changed");
+      expect(listener).toBeTruthy();
+      const event = new Event("sessions:changed");
+      if (typeof listener === "function") {
+        listener(event);
+      } else {
+        listener?.handleEvent(event);
+      }
+
+      await waitFor(() => expect(clientMock.projects).toHaveBeenCalledTimes(1));
+      expect(clientMock.warnings.mock.calls).toEqual([[project.id]]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("clears stale detail filters when opening a project from the overview", async () => {
     const oldProject = { ...projectFixture("E:\\old"), id: "project-old" };
     const newProject = { ...projectFixture("E:\\new-ai-game"), id: "project-new", sessionCount: 3 };
@@ -839,6 +887,26 @@ describe("HomePage", () => {
     expect(clientMock.pickDirectory).toHaveBeenCalled();
     expect(await screen.findByText("正在移动项目并刷新会话路径...")).toBeInTheDocument();
     expect(screen.getByText("迁移中...")).toBeInTheDocument();
+  });
+
+  it("does not show relocation progress while agents initialization is running", async () => {
+    const project = projectFixture("E:\\old");
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.agentsStatus.mockResolvedValue(agentsUninitializedStatusFixture(project.id, project.rootPath));
+    clientMock.initAgents.mockReturnValue(new Promise(() => {}));
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByText("打开"));
+    await screen.findByRole("button", { name: "初始化 agents 配置" });
+
+    fireEvent.click(screen.getByRole("button", { name: "初始化 agents 配置" }));
+
+    expect(clientMock.initAgents).toHaveBeenCalledWith(project.id, project.rootPath);
+    expect(screen.queryByText("迁移中...")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "选择新位置并迁移" })).toBeDisabled();
   });
 });
 
@@ -1095,6 +1163,19 @@ function agentsStatusFixture(projectId = "project-1", projectRoot = "E:\\old"): 
       probes: {},
       probesSkipped: true
     }
+  };
+}
+
+function agentsUninitializedStatusFixture(projectId = "project-1", projectRoot = "E:\\old"): AgentsConfigSyncStatus {
+  return {
+    projectId,
+    projectRoot,
+    available: true,
+    initialized: false,
+    command: "node E:\\github\\agents\\bin\\agents",
+    configPath: `${projectRoot}\\.agents\\agents.json`,
+    error: null,
+    status: null
   };
 }
 

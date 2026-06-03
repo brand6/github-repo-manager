@@ -1,5 +1,4 @@
-import { AppContext } from "./appContext.js";
-import { createHttpApp } from "./http/app.js";
+import { startHttpServer, type RunningHttpServer } from "./runtime.js";
 
 interface CliArgs {
   port: number;
@@ -8,33 +7,39 @@ interface CliArgs {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const context = new AppContext(args.dataDir);
-const app = await createHttpApp(context, { dev: args.dev });
+let runtime: RunningHttpServer | null = null;
+let shuttingDown = false;
 
-const server = app.listen(args.port, "127.0.0.1", () => {
-  const url = `http://127.0.0.1:${args.port}`;
-  console.log(`Local AI project manager listening on ${url}`);
-  const startupTimer = setTimeout(() => context.startBackgroundServices(), 0);
-  startupTimer.unref?.();
-});
-
-server.on("error", (error: NodeJS.ErrnoException) => {
-  if (error.code === "EADDRINUSE") {
+try {
+  runtime = await startHttpServer({ port: args.port, dev: args.dev, dataDir: args.dataDir });
+  console.log(`Local AI project manager listening on ${runtime.url}`);
+} catch (error) {
+  const nodeError = error as NodeJS.ErrnoException;
+  if (nodeError.code === "EADDRINUSE") {
     console.error(`Port ${args.port} is already in use. Restart with --port <port>.`);
     process.exit(1);
   }
   console.error(error);
   process.exit(1);
-});
+}
 
-process.on("SIGINT", () => shutdown());
-process.on("SIGTERM", () => shutdown());
+process.once("SIGINT", () => shutdown());
+process.once("SIGTERM", () => shutdown());
 
 function shutdown(): void {
-  server.close(() => {
-    context.close();
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (!runtime) {
     process.exit(0);
-  });
+    return;
+  }
+  runtime
+    .close()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
 }
 
 function parseArgs(argv: string[]): CliArgs {

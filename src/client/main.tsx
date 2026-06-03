@@ -56,7 +56,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [scanStatus, setScanStatus] = useState("");
   const [selectedDriveRoot, setSelectedDriveRoot] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
@@ -64,6 +64,7 @@ function App() {
   const queryRef = useRef("");
   const autoReloadInFlightRef = useRef(false);
   const autoReloadQueuedRef = useRef(false);
+  const busy = busyAction !== null;
 
   useEffect(() => {
     void initialize();
@@ -125,16 +126,14 @@ function App() {
   }
 
   async function loadHome() {
-    const [projectList, toolList, warningList, driveList, appConfig] = await Promise.all([
+    const [projectList, toolList, driveList, appConfig] = await Promise.all([
       client.projects(),
       client.tools(),
-      client.warnings(),
       client.drives(),
       client.config()
     ]);
     setProjects(projectList);
     setTools(toolList);
-    setWarnings(warningList);
     setDrives(driveList);
     setConfig(appConfig);
   }
@@ -185,15 +184,15 @@ function App() {
     }
   }
 
-  async function runAction(action: () => Promise<void>) {
-    setBusy(true);
+  async function runAction(action: () => Promise<void>, actionName = "action") {
+    setBusyAction(actionName);
     setMessage("");
     try {
       await action();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "操作失败");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
@@ -386,12 +385,13 @@ function App() {
           onResume={(sessionId) => void runAction(() => resumeSession(sessionId))}
           onDeleteSession={(sessionId) => void runAction(() => deleteSession(sessionId))}
           onRepairProject={(targetProjectId, targetRootPath) => void runAction(() => repairProject(selectedProject.id, targetProjectId, targetRootPath))}
-          onRelocateProject={() => void runAction(() => relocateProject(selectedProject.id))}
+          onRelocateProject={() => void runAction(() => relocateProject(selectedProject.id), "relocate")}
           onRefreshAgents={(rootPath) => void runAction(() => refreshAgents(selectedProject.id, rootPath))}
           onInitializeAgents={(rootPath) => void runAction(() => initializeAgents(selectedProject.id, rootPath))}
           onCheckAgentsSync={(rootPath) => void runAction(() => checkAgentsSync(selectedProject.id, rootPath))}
           onApplyAgentsSync={(rootPath) => void runAction(() => applyAgentsSync(selectedProject.id, rootPath))}
           onUpdateAgentsIntegrations={(rootPath, enabledIntegrations) => void runAction(() => updateAgentsIntegrations(selectedProject.id, rootPath, enabledIntegrations))}
+          relocating={busyAction === "relocate"}
         />
       ) : (
         <HomePage
@@ -1204,6 +1204,7 @@ function ProjectDetailView({
   agentsStatuses,
   lastAgentsResults,
   busy,
+  relocating = false,
   setQuery,
   onLaunch,
   onResume,
@@ -1225,6 +1226,7 @@ function ProjectDetailView({
   agentsStatuses: Record<string, AgentsConfigSyncStatus>;
   lastAgentsResults: Record<string, AgentsCommandResult | null>;
   busy: boolean;
+  relocating?: boolean;
   setQuery: (query: string) => void;
   onLaunch: (toolId: ToolId, cwd: string) => void;
   onResume: (sessionId: string) => void;
@@ -1265,7 +1267,7 @@ function ProjectDetailView({
               disabled={busy}
               onClick={onRelocateProject}
             >
-              {busy ? "迁移中..." : "选择新位置并迁移"}
+              {relocating ? "迁移中..." : "选择新位置并迁移"}
             </button>
           </div>
         </div>

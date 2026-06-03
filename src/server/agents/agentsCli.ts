@@ -21,6 +21,7 @@ interface ResolvedAgentsCli {
   baseArgs: string[];
   displayCommand: string;
   shell: boolean;
+  runAsNode: boolean;
   reason: string | null;
 }
 
@@ -175,7 +176,8 @@ function runAgentsCli(cli: ResolvedAgentsCli, cwd: string, args: string[]): RawC
     env: {
       ...process.env,
       AGENTS_NO_UPDATE_CHECK: "1",
-      NO_COLOR: "1"
+      NO_COLOR: "1",
+      ...(cli.runAsNode ? { ELECTRON_RUN_AS_NODE: "1" } : {})
     }
   });
   return {
@@ -288,6 +290,7 @@ function commandForPath(filePath: string): ResolvedAgentsCli {
       baseArgs: [],
       displayCommand: filePath,
       shell: true,
+      runAsNode: false,
       reason: null
     };
   }
@@ -299,6 +302,7 @@ function commandForPath(filePath: string): ResolvedAgentsCli {
       baseArgs: [],
       displayCommand: filePath,
       shell: false,
+      runAsNode: false,
       reason: null
     };
   }
@@ -309,6 +313,7 @@ function commandForPath(filePath: string): ResolvedAgentsCli {
     baseArgs: [filePath],
     displayCommand: `${process.execPath} ${filePath}`,
     shell: false,
+    runAsNode: isElectronRuntime(),
     reason: null
   };
 }
@@ -386,8 +391,13 @@ function unavailable(reason: string, displayCommand: string): ResolvedAgentsCli 
     baseArgs: [],
     displayCommand,
     shell: false,
+    runAsNode: false,
     reason
   };
+}
+
+function isElectronRuntime(): boolean {
+  return Boolean((process.versions as Record<string, string | undefined>).electron);
 }
 
 function statusEnvelope(
