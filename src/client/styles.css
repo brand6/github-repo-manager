@@ -828,6 +828,27 @@ label,
   gap: 12px;
 }
 
+.hookhub-structured-hook-list {
+  display: grid;
+  gap: 10px;
+}
+
+.hookhub-structured-hook-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.1fr) minmax(140px, 0.8fr) minmax(220px, 1.4fr) auto;
+  align-items: end;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.hookhub-structured-hook-row .field.wide {
+  grid-column: span 2;
+}
+
 .hookhub-suite-list,
 .project-hook-tool-list {
   display: grid;
@@ -2287,12 +2308,17 @@ dd {
   .hookhub-toolbar-panel,
   .hookhub-form-grid,
   .hookhub-payload-grid,
+  .hookhub-structured-hook-row,
   .hookhub-apply-row,
   .rule-file-grid,
   .project-local-skill-row,
   .project-local-skill-new-source,
   .skill-target-row summary {
     grid-template-columns: 1fr;
+  }
+
+  .hookhub-structured-hook-row .field.wide {
+    grid-column: auto;
   }
 
   .inline-actions {

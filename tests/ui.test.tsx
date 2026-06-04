@@ -479,6 +479,53 @@ describe("HomePage", () => {
     );
   });
 
+  it("creates a HookHub suite from structured tool and hook selections", async () => {
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "HookHub" }));
+
+    const operations = await screen.findByRole("region", { name: "HookHub 操作" });
+    fireEvent.click(within(operations).getByRole("button", { name: "创建 suite" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "创建 HookHub suite" });
+    expect(within(dialog).getByLabelText("工具")).toHaveValue("claude");
+    expect(within(dialog).getByLabelText("可配置 hook")).toHaveValue("PreToolUse");
+    expect(within(dialog).getByText("工具调用前 PreToolUse")).toBeInTheDocument();
+
+    fireEvent.change(within(dialog).getByLabelText("工具"), { target: { value: "qwen" } });
+    expect(within(dialog).getByLabelText("可配置 hook")).toHaveValue("pre");
+    expect(within(dialog).queryByText("工具调用前 PreToolUse")).not.toBeInTheDocument();
+
+    fireEvent.change(within(dialog).getByLabelText("suite name"), { target: { value: "Qwen multi check" } });
+    fireEvent.change(within(dialog).getByLabelText("可配置 hook"), { target: { value: "post" } });
+    fireEvent.change(within(dialog).getByLabelText("命令"), { target: { value: "npm test" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "添加 hook" }));
+
+    const hookSelectors = within(dialog).getAllByLabelText("可配置 hook");
+    const commandInputs = within(dialog).getAllByLabelText("命令");
+    expect(hookSelectors).toHaveLength(2);
+    expect(commandInputs).toHaveLength(2);
+    expect(hookSelectors[1]).toHaveValue("pre");
+    fireEvent.change(commandInputs[1], { target: { value: "npm run lint" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建 suite" }));
+
+    await waitFor(() =>
+      expect(clientMock.createHookHubSuite).toHaveBeenCalledWith({
+        name: "Qwen multi check",
+        description: "",
+        riskNotes: "",
+        requiredEnv: [],
+        payloads: {
+          qwen: {
+            post: [{ command: "npm test" }],
+            pre: [{ command: "npm run lint" }]
+          }
+        }
+      })
+    );
+  });
+
   it("separates SkillHub import/search and groups skills by source", async () => {
     const localSource = skillHubSourceFixture("source-local", "local-source", "local");
     const githubSource = skillHubSourceFixture("source-github", "owner/repo", "github");

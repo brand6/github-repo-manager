@@ -106,13 +106,13 @@ function CreateHookHubSuiteDialog({
   onCreateSuite: (input: HookHubSuiteInput) => void;
 }) {
   const [mode, setMode] = useState<"structured" | "json">("structured");
-  const [draft, setDraft] = useState<SuiteDraft>(() => emptySuiteDraft());
+  const [structuredDraft, setStructuredDraft] = useState<StructuredHookDraft>(() => emptyStructuredHookDraft());
   const [jsonInput, setJsonInput] = useState("");
   const [error, setError] = useState("");
 
   function submitStructured(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsed = suiteDraftInput(draft, setError);
+    const parsed = structuredHookDraftInput(structuredDraft, setError);
     if (!parsed) return;
     onCreateSuite(parsed);
     onClose();
@@ -147,7 +147,7 @@ function CreateHookHubSuiteDialog({
           </button>
         </div>
         {mode === "structured" ? (
-          <SuiteDraftForm draft={draft} busy={busy} submitLabel="创建 suite" onChange={setDraft} onSubmit={submitStructured} />
+          <StructuredHookSuiteForm draft={structuredDraft} busy={busy} onChange={setStructuredDraft} onSubmit={submitStructured} />
         ) : (
           <form className="hookhub-suite-form" onSubmit={submitJson}>
             <label className="field wide">
@@ -662,6 +662,185 @@ interface SuiteDraft {
   payloads: Record<HookHubSupportedToolId, string>;
 }
 
+interface StructuredHookDraft {
+  name: string;
+  description: string;
+  riskNotes: string;
+  requiredEnv: string;
+  toolId: HookHubSupportedToolId;
+  hooks: StructuredHookRuleDraft[];
+}
+
+interface StructuredHookRuleDraft {
+  hookId: string;
+  matcher: string;
+  command: string;
+}
+
+interface HookTemplate {
+  id: string;
+  label: string;
+  matcher: boolean;
+}
+
+const structuredHookTemplates: Record<HookHubSupportedToolId, HookTemplate[]> = {
+  claude: [
+    { id: "PreToolUse", label: "工具调用前 PreToolUse", matcher: true },
+    { id: "PostToolUse", label: "工具调用后 PostToolUse", matcher: true },
+    { id: "UserPromptSubmit", label: "提交提示词 UserPromptSubmit", matcher: false },
+    { id: "Notification", label: "通知 Notification", matcher: false },
+    { id: "Stop", label: "响应结束 Stop", matcher: false },
+    { id: "SubagentStop", label: "子代理停止 SubagentStop", matcher: false },
+    { id: "SessionStart", label: "会话开始 SessionStart", matcher: false },
+    { id: "PreCompact", label: "压缩前 PreCompact", matcher: false }
+  ],
+  codex: [
+    { id: "pre", label: "执行前 pre", matcher: false },
+    { id: "post", label: "执行后 post", matcher: false },
+    { id: "stop", label: "响应结束 stop", matcher: false }
+  ],
+  qwen: [
+    { id: "pre", label: "执行前 pre", matcher: false },
+    { id: "post", label: "执行后 post", matcher: false },
+    { id: "stop", label: "响应结束 stop", matcher: false }
+  ],
+  qoder: [
+    { id: "pre", label: "执行前 pre", matcher: false },
+    { id: "post", label: "执行后 post", matcher: false },
+    { id: "stop", label: "响应结束 stop", matcher: false }
+  ]
+};
+
+function StructuredHookSuiteForm({
+  draft,
+  busy,
+  onChange,
+  onSubmit
+}: {
+  draft: StructuredHookDraft;
+  busy: boolean;
+  onChange: (draft: StructuredHookDraft) => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  const hookTemplates = structuredHookTemplates[draft.toolId];
+  const hasCommand = draft.hooks.some((hook) => hook.command.trim());
+
+  function selectTool(toolId: HookHubSupportedToolId) {
+    onChange({
+      ...draft,
+      toolId,
+      hooks: [emptyStructuredHookRuleDraft(toolId)]
+    });
+  }
+
+  function selectHook(index: number, hookId: string) {
+    const current = draft.hooks[index];
+    if (!current) return;
+    const hook = hookTemplates.find((item) => item.id === hookId) ?? firstStructuredHookTemplate(draft.toolId);
+    updateHook(index, { hookId, matcher: hook.matcher ? current.matcher || defaultStructuredMatcher(draft.toolId, hook) : "" });
+  }
+
+  function updateHook(index: number, next: Partial<StructuredHookRuleDraft>) {
+    onChange({
+      ...draft,
+      hooks: draft.hooks.map((hook, currentIndex) => (currentIndex === index ? { ...hook, ...next } : hook))
+    });
+  }
+
+  function addHook() {
+    onChange({
+      ...draft,
+      hooks: [...draft.hooks, emptyStructuredHookRuleDraft(draft.toolId)]
+    });
+  }
+
+  function removeHook(index: number) {
+    if (draft.hooks.length <= 1) return;
+    onChange({
+      ...draft,
+      hooks: draft.hooks.filter((_, currentIndex) => currentIndex !== index)
+    });
+  }
+
+  return (
+    <form className="hookhub-suite-form" onSubmit={onSubmit}>
+      <div className="hookhub-form-grid">
+        <label className="field">
+          suite name
+          <input value={draft.name} disabled={busy} onChange={(event) => onChange({ ...draft, name: event.target.value })} />
+        </label>
+        <label className="field">
+          工具
+          <select value={draft.toolId} disabled={busy} onChange={(event) => selectTool(event.target.value as HookHubSupportedToolId)}>
+            {supportedToolIds.map((toolId) => (
+              <option value={toolId} key={toolId}>
+                {toolId}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          requiredEnv
+          <input
+            value={draft.requiredEnv}
+            disabled={busy}
+            onChange={(event) => onChange({ ...draft, requiredEnv: event.target.value })}
+            placeholder="TOKEN_A, TOKEN_B"
+          />
+        </label>
+        <label className="field wide">
+          description
+          <input value={draft.description} disabled={busy} onChange={(event) => onChange({ ...draft, description: event.target.value })} />
+        </label>
+        <label className="field wide">
+          risk notes
+          <input value={draft.riskNotes} disabled={busy} onChange={(event) => onChange({ ...draft, riskNotes: event.target.value })} />
+        </label>
+      </div>
+      <div className="hookhub-structured-hook-list">
+        {draft.hooks.map((hookDraft, index) => {
+          const selectedHook = hookTemplates.find((hook) => hook.id === hookDraft.hookId) ?? firstStructuredHookTemplate(draft.toolId);
+          return (
+            <div className="hookhub-structured-hook-row" key={index}>
+              <label className="field">
+                可配置 hook
+                <select value={hookDraft.hookId} disabled={busy} onChange={(event) => selectHook(index, event.target.value)}>
+                  {hookTemplates.map((hook) => (
+                    <option value={hook.id} key={hook.id}>
+                      {hook.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedHook.matcher ? (
+                <label className="field">
+                  matcher
+                  <input value={hookDraft.matcher} disabled={busy} onChange={(event) => updateHook(index, { matcher: event.target.value })} placeholder="Bash" />
+                </label>
+              ) : null}
+              <label className={selectedHook.matcher ? "field" : "field wide"}>
+                命令
+                <input value={hookDraft.command} disabled={busy} onChange={(event) => updateHook(index, { command: event.target.value })} placeholder="npm test" />
+              </label>
+              <button className="secondary" type="button" disabled={busy || draft.hooks.length <= 1} onClick={() => removeHook(index)}>
+                移除
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="inline-actions">
+        <button className="secondary" type="button" disabled={busy} onClick={addHook}>
+          添加 hook
+        </button>
+        <button className="primary" type="submit" disabled={busy || !draft.name.trim() || !hasCommand}>
+          创建 suite
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function SuiteDraftForm({
   draft,
   busy,
@@ -766,6 +945,78 @@ function suiteDraftInput(draft: SuiteDraft, setError: (error: string) => void): 
   };
 }
 
+function structuredHookDraftInput(draft: StructuredHookDraft, setError: (error: string) => void): HookHubSuiteInput | null {
+  const hooks = draft.hooks
+    .map((hook) => ({
+      hook,
+      template: structuredHookTemplates[draft.toolId].find((item) => item.id === hook.hookId) ?? null,
+      command: hook.command.trim()
+    }))
+    .filter((hook) => hook.command);
+  if (!hooks.length) {
+    setError("至少需要配置一个 hook 命令");
+    return null;
+  }
+  if (hooks.some((hook) => !hook.template)) {
+    setError("请选择可配置 hook");
+    return null;
+  }
+  setError("");
+  return {
+    name: draft.name,
+    description: draft.description,
+    riskNotes: draft.riskNotes,
+    requiredEnv: draft.requiredEnv.split(",").map((item) => item.trim()).filter(Boolean),
+    payloads: {
+      [draft.toolId]: structuredHookPayload(
+        draft.toolId,
+        hooks.map((hook) => ({
+          template: hook.template as HookTemplate,
+          matcher: hook.hook.matcher,
+          command: hook.command
+        }))
+      )
+    }
+  };
+}
+
+function structuredHookPayload(
+  toolId: HookHubSupportedToolId,
+  hooks: Array<{ template: HookTemplate; matcher: string; command: string }>
+): Record<string, unknown[]> {
+  const payload: Record<string, unknown[]> = {};
+  for (const hook of hooks) {
+    const entry =
+      toolId === "claude"
+        ? {
+            ...(hook.template.matcher && hook.matcher.trim() ? { matcher: hook.matcher.trim() } : {}),
+            hooks: [{ type: "command", command: hook.command }]
+          }
+        : { command: hook.command };
+    payload[hook.template.id] = [...(payload[hook.template.id] ?? []), entry];
+  }
+  return payload;
+}
+
+function firstStructuredHookTemplate(toolId: HookHubSupportedToolId): HookTemplate {
+  const first = structuredHookTemplates[toolId][0];
+  if (!first) throw new Error("HookHub structured hook templates missing");
+  return first;
+}
+
+function emptyStructuredHookRuleDraft(toolId: HookHubSupportedToolId): StructuredHookRuleDraft {
+  const hook = firstStructuredHookTemplate(toolId);
+  return {
+    hookId: hook.id,
+    matcher: defaultStructuredMatcher(toolId, hook),
+    command: ""
+  };
+}
+
+function defaultStructuredMatcher(toolId: HookHubSupportedToolId, hook: HookTemplate): string {
+  return toolId === "claude" && hook.matcher ? "Bash" : "";
+}
+
 function suiteInputFromJsonText(input: string, setError: (error: string) => void): HookHubSuiteInput | null {
   try {
     const parsed = JSON.parse(input);
@@ -789,6 +1040,17 @@ function suiteInputFromJsonText(input: string, setError: (error: string) => void
     setError(error instanceof Error ? error.message : "suite JSON 解析失败");
     return null;
   }
+}
+
+function emptyStructuredHookDraft(): StructuredHookDraft {
+  return {
+    name: "",
+    description: "",
+    riskNotes: "",
+    requiredEnv: "",
+    toolId: "claude",
+    hooks: [emptyStructuredHookRuleDraft("claude")]
+  };
 }
 
 function emptySuiteDraft(): SuiteDraft {
