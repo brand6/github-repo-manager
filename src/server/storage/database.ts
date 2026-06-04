@@ -2,8 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  McpHubServer,
+  McpHubTargetToolId,
   ParserWarning,
   Project,
+  ProjectMcpBinding,
   ProjectSkillTarget,
   ProjectToolTarget,
   RelocationProjectMerge,
@@ -210,17 +213,93 @@ export class AppDatabase {
         target_path TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        PRIMARY KEY (project_id, tool_id, skill_id)
+        PRIMARY KEY (project_id, tool_id, skill_id, link_path)
       );
 
+      CREATE TABLE IF NOT EXISTS mcphub_servers (
+        server_id TEXT PRIMARY KEY,
+        name TEXT,
+        description TEXT,
+        transport TEXT NOT NULL,
+        command TEXT,
+        args_json TEXT NOT NULL,
+        url TEXT,
+        headers_json TEXT NOT NULL,
+        env_json TEXT NOT NULL,
+        required_env_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS project_mcp_bindings (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_root_path TEXT NOT NULL,
+        normalized_target_root_path TEXT NOT NULL,
+        tool_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        applied_server_id TEXT NOT NULL REFERENCES mcphub_servers(server_id) ON DELETE CASCADE,
+        applied_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, normalized_target_root_path, tool_id, server_id)
+      );
+    `);
+
+    this.ensureProjectSkillTargetsLinkPathKey();
+
+    this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_project_skill_targets_link
         ON project_skill_targets(project_id, tool_id, link_path);
 
       CREATE INDEX IF NOT EXISTS idx_project_skill_targets_skill
         ON project_skill_targets(skill_id);
+
+      CREATE INDEX IF NOT EXISTS idx_project_mcp_bindings_server
+        ON project_mcp_bindings(applied_server_id);
     `);
 
     this.db.prepare("INSERT OR REPLACE INTO schema_metadata (key, value) VALUES (?, ?)").run("schema_version", "1");
+  }
+
+  private ensureProjectSkillTargetsLinkPathKey(): void {
+    const columns = this.db.prepare("PRAGMA table_info(project_skill_targets)").all();
+    const linkPath = columns.find((column) => String(column.name) === "link_path");
+    if (linkPath && Number(linkPath.pk) > 0) return;
+
+    this.db.exec("PRAGMA foreign_keys = OFF;");
+    try {
+      this.db.exec(`
+        BEGIN;
+
+        ALTER TABLE project_skill_targets RENAME TO project_skill_targets_old;
+
+        CREATE TABLE project_skill_targets (
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          tool_id TEXT NOT NULL,
+          skill_id TEXT NOT NULL REFERENCES skillhub_skills(id) ON DELETE CASCADE,
+          link_path TEXT NOT NULL,
+          target_path TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (project_id, tool_id, skill_id, link_path)
+        );
+
+        INSERT OR IGNORE INTO project_skill_targets (
+          project_id, tool_id, skill_id, link_path, target_path, created_at, updated_at
+        )
+        SELECT project_id, tool_id, skill_id, link_path, target_path, created_at, updated_at
+        FROM project_skill_targets_old;
+
+        DROP TABLE project_skill_targets_old;
+
+        COMMIT;
+      `);
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    } finally {
+      this.db.exec("PRAGMA foreign_keys = ON;");
+    }
   }
 
   setSetting(key: string, value: unknown): void {
@@ -408,6 +487,148 @@ export class AppDatabase {
     return Number(result.changes) > 0;
   }
 
+  listMcpHubServers(): McpHubServer[] {
+    return this.db
+      .prepare("SELECT * FROM mcphub_servers ORDER BY server_id ASC")
+      .all()
+      .map((row) => this.mcpHubServerFromRow(row));
+  }
+
+  getMcpHubServer(serverId: string): McpHubServer | null {
+    const row = this.db.prepare("SELECT * FROM mcphub_servers WHERE server_id = ?").get(serverId);
+    return row ? this.mcpHubServerFromRow(row) : null;
+  }
+
+  upsertMcpHubServer(input: Omit<McpHubServer, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): McpHubServer {
+    const existing = this.getMcpHubServer(input.serverId);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO mcphub_servers (
+          server_id, name, description, transport, command, args_json, url, headers_json,
+          env_json, required_env_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(server_id) DO UPDATE SET
+          name = excluded.name,
+          description = excluded.description,
+          transport = excluded.transport,
+          command = excluded.command,
+          args_json = excluded.args_json,
+          url = excluded.url,
+          headers_json = excluded.headers_json,
+          env_json = excluded.env_json,
+          required_env_json = excluded.required_env_json,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.serverId,
+        input.name,
+        input.description,
+        input.transport,
+        input.command,
+        json(input.args),
+        input.url,
+        json(input.headers),
+        json(input.env),
+        json(input.requiredEnv),
+        createdAt,
+        updatedAt
+      );
+    const server = this.getMcpHubServer(input.serverId);
+    if (!server) throw new Error("Failed to upsert McpHub server");
+    return server;
+  }
+
+  deleteMcpHubServer(serverId: string): boolean {
+    const result = this.db.prepare("DELETE FROM mcphub_servers WHERE server_id = ?").run(serverId);
+    return Number(result.changes) > 0;
+  }
+
+  listProjectMcpBindings(projectId?: string, targetRootPath?: string): ProjectMcpBinding[] {
+    if (projectId && targetRootPath) {
+      return this.db
+        .prepare(
+          `SELECT * FROM project_mcp_bindings
+           WHERE project_id = ? AND normalized_target_root_path = ?
+           ORDER BY tool_id ASC, server_id ASC`
+        )
+        .all(projectId, normalizeFsPath(targetRootPath))
+        .map((row) => this.projectMcpBindingFromRow(row));
+    }
+    if (projectId) {
+      return this.db
+        .prepare("SELECT * FROM project_mcp_bindings WHERE project_id = ? ORDER BY normalized_target_root_path ASC, tool_id ASC, server_id ASC")
+        .all(projectId)
+        .map((row) => this.projectMcpBindingFromRow(row));
+    }
+    return this.db
+      .prepare("SELECT * FROM project_mcp_bindings ORDER BY project_id ASC, normalized_target_root_path ASC, tool_id ASC, server_id ASC")
+      .all()
+      .map((row) => this.projectMcpBindingFromRow(row));
+  }
+
+  listProjectMcpBindingsForServer(serverId: string): ProjectMcpBinding[] {
+    return this.db
+      .prepare("SELECT * FROM project_mcp_bindings WHERE applied_server_id = ? ORDER BY project_id ASC, tool_id ASC")
+      .all(serverId)
+      .map((row) => this.projectMcpBindingFromRow(row));
+  }
+
+  getProjectMcpBinding(projectId: string, targetRootPath: string, toolId: McpHubTargetToolId, serverId: string): ProjectMcpBinding | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM project_mcp_bindings
+         WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ? AND server_id = ?`
+      )
+      .get(projectId, normalizeFsPath(targetRootPath), toolId, serverId);
+    return row ? this.projectMcpBindingFromRow(row) : null;
+  }
+
+  upsertProjectMcpBinding(input: Omit<ProjectMcpBinding, "createdAt" | "updatedAt">): ProjectMcpBinding {
+    const normalizedTargetRootPath = normalizeFsPath(input.targetRootPath);
+    const existing = this.db
+      .prepare(
+        `SELECT created_at FROM project_mcp_bindings
+         WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ? AND server_id = ?`
+      )
+      .get(input.projectId, normalizedTargetRootPath, input.toolId, input.serverId);
+    const timestamp = nowIso();
+    const createdAt = String(existing?.created_at ?? timestamp);
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO project_mcp_bindings (
+          project_id, target_root_path, normalized_target_root_path, tool_id, server_id,
+          applied_server_id, applied_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.projectId,
+        input.targetRootPath,
+        normalizedTargetRootPath,
+        input.toolId,
+        input.serverId,
+        input.appliedServerId,
+        input.appliedAt,
+        createdAt,
+        timestamp
+      );
+    const stored = this.getProjectMcpBinding(input.projectId, input.targetRootPath, input.toolId, input.serverId);
+    if (!stored) throw new Error("Failed to upsert project MCP binding");
+    return stored;
+  }
+
+  deleteProjectMcpBinding(projectId: string, targetRootPath: string, toolId: McpHubTargetToolId, serverId: string): boolean {
+    const result = this.db
+      .prepare(
+        `DELETE FROM project_mcp_bindings
+         WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ? AND server_id = ?`
+      )
+      .run(projectId, normalizeFsPath(targetRootPath), toolId, serverId);
+    return Number(result.changes) > 0;
+  }
+
   listStoredProjectToolTargets(projectId: string): Array<Pick<ProjectToolTarget, "projectId" | "toolId" | "enabled" | "inferred" | "updatedAt">> {
     return this.db
       .prepare("SELECT * FROM project_tool_targets WHERE project_id = ? ORDER BY tool_id ASC")
@@ -467,8 +688,8 @@ export class AppDatabase {
 
   upsertProjectSkillTarget(input: Omit<ProjectSkillTarget, "createdAt" | "updatedAt">): ProjectSkillTarget {
     const existing = this.db
-      .prepare("SELECT created_at FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
-      .get(input.projectId, input.toolId, input.skillId);
+      .prepare("SELECT created_at FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ? AND link_path = ?")
+      .get(input.projectId, input.toolId, input.skillId, input.linkPath);
     const timestamp = nowIso();
     const createdAt = String(existing?.created_at ?? timestamp);
     this.db
@@ -479,20 +700,30 @@ export class AppDatabase {
       )
       .run(input.projectId, input.toolId, input.skillId, input.linkPath, input.targetPath, createdAt, timestamp);
     const stored = this.db
-      .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
-      .get(input.projectId, input.toolId, input.skillId);
+      .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ? AND link_path = ?")
+      .get(input.projectId, input.toolId, input.skillId, input.linkPath);
     if (!stored) throw new Error("Failed to upsert project skill target");
     return this.projectSkillTargetFromRow(stored);
   }
 
-  deleteProjectSkillTarget(projectId: string, toolId: ToolId, skillId: string): ProjectSkillTarget | null {
-    const row = this.db
-      .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
-      .get(projectId, toolId, skillId);
+  deleteProjectSkillTarget(projectId: string, toolId: ToolId, skillId: string, linkPath?: string): ProjectSkillTarget | null {
+    const row = linkPath
+      ? this.db
+          .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ? AND link_path = ?")
+          .get(projectId, toolId, skillId, linkPath)
+      : this.db
+          .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
+          .get(projectId, toolId, skillId);
     if (!row) return null;
-    this.db
-      .prepare("DELETE FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
-      .run(projectId, toolId, skillId);
+    if (linkPath) {
+      this.db
+        .prepare("DELETE FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ? AND link_path = ?")
+        .run(projectId, toolId, skillId, linkPath);
+    } else {
+      this.db
+        .prepare("DELETE FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
+        .run(projectId, toolId, skillId);
+    }
     return this.projectSkillTargetFromRow(row);
   }
 
@@ -1028,6 +1259,23 @@ export class AppDatabase {
     };
   }
 
+  private mcpHubServerFromRow(row: Row): McpHubServer {
+    return {
+      serverId: String(row.server_id),
+      name: row.name === null ? null : String(row.name),
+      description: row.description === null ? null : String(row.description),
+      transport: String(row.transport) as McpHubServer["transport"],
+      command: row.command === null ? null : String(row.command),
+      args: parseJson<string[]>(String(row.args_json), []),
+      url: row.url === null ? null : String(row.url),
+      headers: parseJson<Record<string, string>>(String(row.headers_json), {}),
+      env: parseJson<Record<string, string>>(String(row.env_json), {}),
+      requiredEnv: parseJson<string[]>(String(row.required_env_json), []),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
   private projectSkillTargetFromRow(row: Row): ProjectSkillTarget {
     return {
       projectId: String(row.project_id),
@@ -1035,6 +1283,19 @@ export class AppDatabase {
       skillId: String(row.skill_id),
       linkPath: String(row.link_path),
       targetPath: String(row.target_path),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
+  private projectMcpBindingFromRow(row: Row): ProjectMcpBinding {
+    return {
+      projectId: String(row.project_id),
+      targetRootPath: String(row.target_root_path),
+      toolId: String(row.tool_id) as McpHubTargetToolId,
+      serverId: String(row.server_id),
+      appliedServerId: String(row.applied_server_id),
+      appliedAt: String(row.applied_at),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
     };

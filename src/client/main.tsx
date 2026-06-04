@@ -4,10 +4,20 @@ import { terminalModes } from "../shared/types.js";
 import type {
   AppConfig,
   BootstrapState,
+  McpHubImportResult,
+  McpHubList,
+  McpHubTargetToolId,
   ParserWarning,
   Project,
   ProjectDetail,
   ProjectDetailGroup,
+  ProjectLocalMcpMigrationMode,
+  ProjectLocalSkillMigrationMode,
+  ProjectLocalSkillMigrationResult,
+  ProjectLocalSkillMigrationTarget,
+  ProjectLocalSkillsState,
+  ProjectMcpApplyResult,
+  ProjectMcpState,
   ProjectRepairCandidate,
   ProjectSkillTargetsState,
   ProjectSkillUpdateResult,
@@ -26,7 +36,8 @@ import type {
   ToolStatus
 } from "../shared/types.js";
 import { client } from "./api.js";
-import { ProjectSkillPanel, SkillHubPage } from "./skillhubViews.js";
+import { McpHubPage, ProjectMcpPanel } from "./mcphubViews.js";
+import { ProjectSkillsPanel, SkillHubPage } from "./skillhubViews.js";
 import "./styles.css";
 
 interface ScanResultState {
@@ -64,13 +75,22 @@ function App() {
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
-  const [view, setView] = useState<"home" | "skillhub">("home");
+  const [view, setView] = useState<"home" | "skillhub" | "mcphub">("home");
   const [skillHub, setSkillHub] = useState<SkillHubList | null>(null);
   const [skillHubQuery, setSkillHubQuery] = useState("");
   const [skillHubUpdates, setSkillHubUpdates] = useState<SkillHubUpdateCheckResult | null>(null);
+  const [mcpHub, setMcpHub] = useState<McpHubList | null>(null);
+  const [lastMcpHubImport, setLastMcpHubImport] = useState<McpHubImportResult | null>(null);
   const [projectSkillPanelOpen, setProjectSkillPanelOpen] = useState(false);
   const [projectSkillState, setProjectSkillState] = useState<ProjectSkillTargetsState | null>(null);
+  const [projectSkillTargetRoot, setProjectSkillTargetRoot] = useState<string | null>(null);
   const [lastProjectSkillResult, setLastProjectSkillResult] = useState<ProjectSkillUpdateResult | null>(null);
+  const [projectLocalSkillState, setProjectLocalSkillState] = useState<ProjectLocalSkillsState | null>(null);
+  const [projectLocalSkillTargetRoot, setProjectLocalSkillTargetRoot] = useState<string | null>(null);
+  const [projectMcpPanelOpen, setProjectMcpPanelOpen] = useState(false);
+  const [projectMcpState, setProjectMcpState] = useState<ProjectMcpState | null>(null);
+  const [projectMcpTargetRoot, setProjectMcpTargetRoot] = useState<string | null>(null);
+  const [lastProjectMcpApply, setLastProjectMcpApply] = useState<ProjectMcpApplyResult | null>(null);
   const [ruleSyncStatus, setRuleSyncStatus] = useState<RuleSyncStatus | null>(null);
   const [pendingRuleSyncDirection, setPendingRuleSyncDirection] = useState<RuleSyncDirection | null>(null);
   const selectedProjectIdRef = useRef<string | null>(null);
@@ -143,6 +163,11 @@ function App() {
     void loadSkillHub(skillHubQuery);
   }, [view, skillHubQuery, bootstrap?.initialized]);
 
+  useEffect(() => {
+    if (view !== "mcphub" || !bootstrap?.initialized) return;
+    void loadMcpHub();
+  }, [view, bootstrap?.initialized]);
+
   async function initialize() {
     const state = await client.bootstrap();
     setBootstrap(state);
@@ -166,6 +191,10 @@ function App() {
 
   async function loadSkillHub(search = skillHubQuery) {
     setSkillHub(await client.skillhub(search));
+  }
+
+  async function loadMcpHub() {
+    setMcpHub(await client.mcphub());
   }
 
   async function loadDetail(projectId: string, search: string) {
@@ -250,7 +279,14 @@ function App() {
     setProjectToolTargets([]);
     setProjectSkillPanelOpen(false);
     setProjectSkillState(null);
+    setProjectSkillTargetRoot(null);
     setLastProjectSkillResult(null);
+    setProjectLocalSkillState(null);
+    setProjectLocalSkillTargetRoot(null);
+    setProjectMcpPanelOpen(false);
+    setProjectMcpState(null);
+    setProjectMcpTargetRoot(null);
+    setLastProjectMcpApply(null);
     setRuleSyncStatus(null);
     setPendingRuleSyncDirection(null);
   }
@@ -278,16 +314,19 @@ function App() {
     void loadSkillHub();
   }
 
+  function openMcpHub() {
+    setSelectedProjectId(null);
+    setMessage("");
+    clearProjectViewState();
+    setView("mcphub");
+    void loadMcpHub();
+  }
+
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const totalSessions = projects.reduce((sum, project) => sum + project.sessionCount, 0);
   const showingSkillHub = view === "skillhub" && !selectedProject;
-  const projectActions = selectedProject ? (
-    <div className="topbar-project-actions">
-      <button className="secondary" type="button" disabled={busy} onClick={() => void runAction(() => openProjectSkillPanel(selectedProject.id))}>
-        技能
-      </button>
-    </div>
-  ) : showingSkillHub ? null : (
+  const showingMcpHub = view === "mcphub" && !selectedProject;
+  const projectActions = selectedProject || showingSkillHub || showingMcpHub ? null : (
     <div className="home-actions topbar-home-actions" aria-label="项目操作">
       <button className="primary" type="button" disabled={busy} onClick={() => setNewProjectDialogOpen(true)}>
         新建项目
@@ -338,10 +377,13 @@ function App() {
           <span className="brand-mark" aria-hidden="true">
             AI
           </span>
-          <span>本地 AI 项目</span>
+          <span>AI项目管理</span>
         </button>
         <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
           SkillHub
+        </button>
+        <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
+          McpHub
         </button>
         {selectedProject ? (
           <div className="topbar-project-context">
@@ -360,13 +402,13 @@ function App() {
               </label>
             </div>
           </div>
-        ) : showingSkillHub ? (
+        ) : showingSkillHub || showingMcpHub ? (
           <div className="topbar-project-context">
             <button className="secondary" type="button" onClick={returnHome}>
               返回
             </button>
             <div className="topbar-project-title">
-              <h1>SkillHub</h1>
+              <h1>{showingSkillHub ? "SkillHub" : "McpHub"}</h1>
             </div>
           </div>
         ) : (
@@ -383,7 +425,7 @@ function App() {
             <button className="secondary" type="button" onClick={() => void runAction(checkSkillHubUpdates)} disabled={busy}>
               检查更新
             </button>
-          ) : !selectedProject ? (
+          ) : !selectedProject && !showingMcpHub ? (
             <button className="secondary" type="button" onClick={() => setRefreshDialogOpen(true)} disabled={busy}>
               刷新索引
             </button>
@@ -451,12 +493,27 @@ function App() {
       ) : null}
 
       {projectSkillPanelOpen ? (
-        <ProjectSkillPanel
-          state={projectSkillState}
+        <ProjectSkillsPanel
+          skillState={projectSkillState}
+          localSkillState={projectLocalSkillState}
           busy={busy}
           lastResult={lastProjectSkillResult}
           onClose={() => setProjectSkillPanelOpen(false)}
           onUpdateSkill={(skillId, toolIds) => void runAction(() => saveProjectSkillTargets(skillId, toolIds))}
+          onPickDirectory={pickDirectory}
+          onMigrateLocalSkills={(skills, target) => void runAction(() => migrateProjectLocalSkills(skills, target))}
+        />
+      ) : null}
+
+      {projectMcpPanelOpen ? (
+        <ProjectMcpPanel
+          state={projectMcpState}
+          busy={busy}
+          lastApply={lastProjectMcpApply}
+          onClose={() => setProjectMcpPanelOpen(false)}
+          onApply={(serverId, toolId) => void runAction(() => applyProjectMcp(serverId, toolId))}
+          onDisable={(serverId, toolId) => void runAction(() => disableProjectMcp(serverId, toolId))}
+          onMigrate={(serverId) => void runAction(() => migrateProjectLocalMcp(serverId))}
         />
       ) : null}
 
@@ -480,6 +537,14 @@ function App() {
           onDeleteSkill={(skillId) => void runAction(() => deleteSkill(skillId))}
           onApplyUpdate={(preview) => void runAction(() => applySkillHubUpdate(preview))}
         />
+      ) : showingMcpHub ? (
+        <McpHubPage
+          mcphub={mcpHub}
+          busy={busy}
+          lastImport={lastMcpHubImport}
+          onImportJson={(input) => void runAction(() => importMcpHubJson(input))}
+          onDeleteServer={(serverId) => void runAction(() => deleteMcpHubServer(serverId))}
+        />
       ) : selectedProject ? (
         <ProjectDetailView
           project={selectedProject}
@@ -501,6 +566,8 @@ function App() {
           onUpdateProjectTools={(toolIds) => void runAction(() => saveProjectToolTargets(toolIds))}
           onRefreshRuleSync={() => void runAction(() => refreshRuleSyncStatus())}
           onApplyRuleSync={(direction) => setPendingRuleSyncDirection(direction)}
+          onOpenProjectSkills={(targetRootPath) => void runAction(() => openProjectSkillPanel(selectedProject.id, targetRootPath))}
+          onOpenProjectMcp={(targetRootPath) => void runAction(() => openProjectMcpPanel(selectedProject.id, targetRootPath))}
         />
       ) : (
         <HomePage
@@ -741,7 +808,7 @@ function App() {
     setSkillHubUpdates(null);
     await loadSkillHub();
     if (projectSkillPanelOpen && selectedProjectId) {
-      setProjectSkillState(await client.projectSkillTargets(selectedProjectId));
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
     }
     setMessage("SkillHub 技能已删除");
   }
@@ -774,10 +841,163 @@ function App() {
     setMessage("GitHub source 更新已应用");
   }
 
-  async function openProjectSkillPanel(projectId: string) {
+  async function importMcpHubJson(input: string) {
+    const result = await client.importMcpHubJson(input);
+    setLastMcpHubImport(result);
+    await loadMcpHub();
+    setMessage(`MCP 导入完成：新增 ${result.added.length} 个，更新 ${result.updated.length} 个，Patch ${result.patched.length} 个，失败 ${result.failed.length} 个`);
+  }
+
+  async function deleteMcpHubServer(serverId: string) {
+    const confirmed = window.confirm(`确定删除 MCP server「${serverId}」？McpHub 只会清理已接管的项目配置。`);
+    if (!confirmed) {
+      setMessage("已取消删除 MCP server");
+      return;
+    }
+    const result = await client.deleteMcpHubServer(serverId);
+    await loadMcpHub();
+    if (projectMcpPanelOpen && selectedProjectId) {
+      setProjectMcpState(await client.projectMcp(selectedProjectId, projectMcpTargetRoot ?? undefined));
+    }
+    setMessage(`MCP server 已删除：清理 ${result.modifiedFiles.length} 个文件，跳过 ${result.skippedMissingFiles.length} 个缺失文件，失败 ${result.failures.length} 个`);
+  }
+
+  async function openProjectSkillPanel(projectId: string, targetRootPath: string) {
     setProjectSkillPanelOpen(true);
+    setProjectSkillTargetRoot(targetRootPath);
+    setProjectLocalSkillTargetRoot(targetRootPath);
     setLastProjectSkillResult(null);
-    setProjectSkillState(await client.projectSkillTargets(projectId));
+    const [skillTargets, localSkills] = await Promise.all([
+      client.projectSkillTargets(projectId, targetRootPath),
+      client.projectLocalSkills(projectId, targetRootPath)
+    ]);
+    setProjectSkillState(skillTargets);
+    setProjectLocalSkillState(localSkills);
+  }
+
+  async function openProjectMcpPanel(projectId: string, targetRootPath: string) {
+    setProjectMcpPanelOpen(true);
+    setProjectMcpTargetRoot(targetRootPath);
+    setLastProjectMcpApply(null);
+    setProjectMcpState(await client.projectMcp(projectId, targetRootPath));
+  }
+
+  async function applyProjectMcp(serverId: string, toolId: McpHubTargetToolId) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectMcpTargetRoot ?? undefined;
+    const result = await client.applyProjectMcp(selectedProjectId, serverId, toolId, targetRootPath);
+    setLastProjectMcpApply(result);
+    setProjectMcpState(await client.projectMcp(selectedProjectId, targetRootPath));
+    setMessage(result.warnings.length ? `MCP 已应用，但有 ${result.warnings.length} 个环境变量警告` : "MCP 已应用到项目");
+  }
+
+  async function disableProjectMcp(serverId: string, toolId: McpHubTargetToolId) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectMcpTargetRoot ?? undefined;
+    const result = await client.disableProjectMcp(selectedProjectId, serverId, toolId, targetRootPath);
+    setLastProjectMcpApply(null);
+    setProjectMcpState(await client.projectMcp(selectedProjectId, targetRootPath));
+    setMessage(result.modified ? "MCP 已从项目配置移除" : result.reason ?? "MCP 绑定已取消");
+  }
+
+  async function migrateProjectLocalMcp(serverId: string) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectMcpTargetRoot ?? undefined;
+    let result = await client.migrateProjectLocalMcp(selectedProjectId, serverId, null, targetRootPath);
+    if (result.requiresConfirmation) {
+      const mode = chooseLocalMcpMigrationMode(serverId);
+      if (!mode) {
+        setMessage("已取消本地 MCP 迁移");
+        return;
+      }
+      result = await client.migrateProjectLocalMcp(selectedProjectId, serverId, mode, targetRootPath);
+    }
+    await loadMcpHub();
+    setProjectMcpState(await client.projectMcp(selectedProjectId, targetRootPath));
+    if (result.message) {
+      setMessage(result.message);
+    } else if (result.action === "linked-existing") {
+      setMessage("本地 MCP 已关联到 McpHub");
+    } else if (result.action === "overwrote-mcphub") {
+      setMessage("本地 MCP 已覆盖 McpHub 定义并接管");
+    } else {
+      setMessage("本地 MCP 已迁移到 McpHub");
+    }
+  }
+
+  async function migrateProjectLocalSkill(toolId: ToolId, folderName: string, target: ProjectLocalSkillMigrationTarget) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectLocalSkillTargetRoot ?? undefined;
+    const result = await runProjectLocalSkillMigration(selectedProjectId, targetRootPath, toolId, folderName, target);
+    if (!result) {
+      setMessage("已取消本地技能迁移");
+      return;
+    }
+
+    await refreshProjectSkillPanelsAfterMigration(targetRootPath);
+    setMessage(projectLocalSkillMigrationMessage(result));
+  }
+
+  async function migrateProjectLocalSkills(
+    skills: Array<{ toolId: ToolId; folderName: string }>,
+    target: ProjectLocalSkillMigrationTarget
+  ) {
+    if (!selectedProjectId || skills.length === 0) return;
+    const projectId = selectedProjectId;
+    const targetRootPath = projectLocalSkillTargetRoot ?? undefined;
+    const results: ProjectLocalSkillMigrationResult[] = [];
+
+    for (const skill of skills) {
+      const result = await runProjectLocalSkillMigration(projectId, targetRootPath, skill.toolId, skill.folderName, target);
+      if (!result) break;
+      results.push(result);
+    }
+
+    await refreshProjectSkillPanelsAfterMigration(targetRootPath);
+    if (results.length === 0) {
+      setMessage("已取消本地技能迁移");
+    } else if (skills.length === 1) {
+      setMessage(projectLocalSkillMigrationMessage(results[0]!));
+    } else {
+      setMessage(`本地技能迁移完成：${results.length}/${skills.length} 个`);
+    }
+  }
+
+  async function runProjectLocalSkillMigration(
+    projectId: string,
+    targetRootPath: string | undefined,
+    toolId: ToolId,
+    folderName: string,
+    target: ProjectLocalSkillMigrationTarget
+  ): Promise<ProjectLocalSkillMigrationResult | null> {
+    let result = await client.migrateProjectLocalSkill(projectId, toolId, folderName, null, targetRootPath, target);
+    if (result.requiresConfirmation) {
+      const mode = chooseLocalSkillMigrationMode(folderName, result.conflictSkills[0]?.libraryRelativePath ?? result.conflictSkills[0]?.folderName ?? "同名技能");
+      if (!mode) {
+        return null;
+      }
+      result = await client.migrateProjectLocalSkill(projectId, toolId, folderName, mode, targetRootPath, target);
+    }
+
+    return result;
+  }
+
+  async function refreshProjectSkillPanelsAfterMigration(targetRootPath: string | undefined) {
+    if (!selectedProjectId) return;
+    setSkillHubUpdates(null);
+    setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, targetRootPath));
+    if (projectSkillPanelOpen) {
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+    }
+    if (view === "skillhub") await loadSkillHub();
+  }
+
+  function projectLocalSkillMigrationMessage(result: ProjectLocalSkillMigrationResult) {
+    if (result.action === "linked-existing") {
+      return "本地技能已换成 SkillHub link";
+    }
+    if (result.action === "overwrote-skillhub") return "SkillHub 技能已覆盖，本地已转为 link";
+    return "本地技能已迁移到 SkillHub";
   }
 
   async function saveProjectToolTargets(toolIds: ToolId[]) {
@@ -785,22 +1005,27 @@ function App() {
     await client.updateProjectToolTargets(selectedProjectId, toolIds);
     setProjectToolTargets(await client.projectToolTargets(selectedProjectId));
     if (projectSkillPanelOpen) {
-      setProjectSkillState(await client.projectSkillTargets(selectedProjectId));
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? undefined));
+    }
+    if (projectMcpPanelOpen) {
+      setProjectMcpState(await client.projectMcp(selectedProjectId, projectMcpTargetRoot ?? undefined));
     }
     setMessage("项目使用工具已更新");
   }
 
   async function saveProjectSkillTargets(skillId: string, toolIds: ToolId[]) {
     if (!selectedProjectId) return;
-    let result = await client.updateProjectSkillTargets(selectedProjectId, skillId, toolIds);
+    const targetRootPath = projectSkillTargetRoot ?? undefined;
+    let result = await client.updateProjectSkillTargets(selectedProjectId, skillId, toolIds, false, targetRootPath);
     if (result.requiresConfirmation) {
       const confirmed = window.confirm("项目使用工具中已有同名技能 link，是否替换为当前 SkillHub 技能？");
       if (confirmed) {
-        result = await client.updateProjectSkillTargets(selectedProjectId, skillId, toolIds, true);
+        result = await client.updateProjectSkillTargets(selectedProjectId, skillId, toolIds, true, targetRootPath);
       }
     }
     setLastProjectSkillResult(result);
-    setProjectSkillState(await client.projectSkillTargets(selectedProjectId));
+    setProjectSkillState(await client.projectSkillTargets(selectedProjectId, targetRootPath));
     if (result.failures.length > 0) {
       setMessage(`技能 link 更新完成，但有 ${result.failures.length} 个失败项`);
     } else if (result.requiresConfirmation) {
@@ -856,6 +1081,32 @@ function hasRuleSyncConfirmationOptions(options: { confirmDirectOverwrite?: bool
   return Boolean(options.confirmDirectOverwrite);
 }
 
+function chooseLocalSkillMigrationMode(folderName: string, existingSkillLabel: string): ProjectLocalSkillMigrationMode | null {
+  const choice = window.prompt(
+    `SkillHub 已有同名技能「${folderName}」：${existingSkillLabel}\n` +
+      "输入 1 覆盖SkillHub（并转为link）\n" +
+      "输入 2 本地换成link（删除本地技能）\n" +
+      "输入 3 取消",
+    "3"
+  );
+  if (choice === "1") return "overwrite-skillhub";
+  if (choice === "2") return "link-existing";
+  return null;
+}
+
+function chooseLocalMcpMigrationMode(serverId: string): ProjectLocalMcpMigrationMode | null {
+  const choice = window.prompt(
+    `McpHub 已有同名 MCP server「${serverId}」\n` +
+      "输入 1 覆盖 McpHub 定义\n" +
+      "输入 2 关联现有 McpHub 定义\n" +
+      "输入 3 取消",
+    "3"
+  );
+  if (choice === "1") return "overwrite-mcphub";
+  if (choice === "2") return "link-existing";
+  return null;
+}
+
 function Shell({ message }: { message: string }) {
   return (
     <main className="app">
@@ -879,7 +1130,7 @@ function NewProjectDialog({
 }) {
   const [projectName, setProjectName] = useState("");
   const [parentPath, setParentPath] = useState("");
-  const selectableTools = useMemo(() => tools.filter((tool) => tool.visibleInProjectUi && tool.supported), [tools]);
+  const selectableTools = useMemo(() => tools.filter(isLaunchableProjectTool), [tools]);
   const [selectedToolIds, setSelectedToolIds] = useState<ToolId[]>([]);
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState("");
@@ -1274,7 +1525,7 @@ function SetupScreen({
           <span className="brand-mark" aria-hidden="true">
             AI
           </span>
-          <span>本地 AI 项目</span>
+          <span>AI项目管理</span>
         </div>
         <h1>选择管理器工作目录</h1>
         <p>索引、配置和扫描结果会保存在这个目录。Codex 和 Claude 的原始会话文件不会被修改。</p>
@@ -1513,7 +1764,9 @@ function ProjectDetailView({
   onRelocateProject,
   onUpdateProjectTools = () => {},
   onRefreshRuleSync = () => {},
-  onApplyRuleSync = () => {}
+  onApplyRuleSync = () => {},
+  onOpenProjectSkills = () => {},
+  onOpenProjectMcp = () => {}
 }: {
   project: Project;
   detail: ProjectDetail | null;
@@ -1534,12 +1787,11 @@ function ProjectDetailView({
   onUpdateProjectTools?: (toolIds: ToolId[]) => void;
   onRefreshRuleSync?: () => void;
   onApplyRuleSync?: (direction: RuleSyncDirection) => void;
+  onOpenProjectSkills?: (targetRootPath: string) => void;
+  onOpenProjectMcp?: (targetRootPath: string) => void;
 }) {
   const toolMap = useMemo(() => new Map(tools.map((tool) => [tool.toolId, tool])), [tools]);
-  const projectTools = useMemo(
-    () => tools.filter((tool) => tool.visibleInProjectUi && tool.supported),
-    [tools]
-  );
+  const projectTools = useMemo(() => tools.filter(isLaunchableProjectTool), [tools]);
   const repairSignals = useMemo(
     () => buildRepairSignals(project, detail, warnings, repairCandidates),
     [detail, project, repairCandidates, warnings]
@@ -1596,6 +1848,8 @@ function ProjectDetailView({
           onLaunch={onLaunch}
           onResume={onResume}
           onDeleteSession={onDeleteSession}
+          onOpenProjectSkills={onOpenProjectSkills}
+          onOpenProjectMcp={onOpenProjectMcp}
         />
       ))}
 
@@ -1887,6 +2141,10 @@ function uniqueToolIds(toolIds: ToolId[]): ToolId[] {
   return Array.from(new Set(toolIds));
 }
 
+function isLaunchableProjectTool(tool: ToolStatus): boolean {
+  return tool.visibleInProjectUi && tool.supported && tool.available;
+}
+
 function SessionGroup({
   group,
   tools,
@@ -1894,7 +2152,9 @@ function SessionGroup({
   busy,
   onLaunch,
   onResume,
-  onDeleteSession
+  onDeleteSession,
+  onOpenProjectSkills,
+  onOpenProjectMcp
 }: {
   group: ProjectDetailGroup;
   tools: ToolStatus[];
@@ -1903,6 +2163,8 @@ function SessionGroup({
   onLaunch: (toolId: ToolId, cwd: string) => void;
   onResume: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
+  onOpenProjectSkills: (targetRootPath: string) => void;
+  onOpenProjectMcp: (targetRootPath: string) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -1916,6 +2178,12 @@ function SessionGroup({
         </div>
         <div className="group-actions">
           <span className="metric-pill strong">{group.sessionCount} 个会话</span>
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectSkills(group.fullPath)}>
+            技能
+          </button>
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectMcp(group.fullPath)}>
+            MCP
+          </button>
           <button className="primary" type="button" onClick={() => setPickerOpen((open) => !open)}>
             新会话
           </button>

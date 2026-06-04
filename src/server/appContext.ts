@@ -1,20 +1,27 @@
 import crypto from "node:crypto";
-import type { AppConfig, BootstrapState } from "../shared/types.js";
+import type { AppConfig, BootstrapState, DirectoryPickResponse } from "../shared/types.js";
 import { ensureConfigFiles, normalizeConfig, resolveBootstrapState, writeAppConfig, writeBootstrap } from "./core/bootstrap.js";
+import { pickDirectory } from "./core/localFilesystem.js";
 import { AppEventHub } from "./events/appEvents.js";
 import { SessionIndexService } from "./scanning/sessionIndexService.js";
 import { AppDatabase } from "./storage/database.js";
 
+export interface AppContextOptions {
+  pickDirectory?: () => DirectoryPickResponse | Promise<DirectoryPickResponse>;
+}
+
 export class AppContext {
   readonly token = crypto.randomBytes(24).toString("base64url");
   private readonly events = new AppEventHub();
+  private readonly pickDirectoryHandler: () => DirectoryPickResponse | Promise<DirectoryPickResponse>;
   private state: BootstrapState;
   private databaseInstance: AppDatabase | null = null;
   private configInstance: AppConfig | null = null;
   private sessionIndexService: SessionIndexService | null = null;
   private backgroundServicesEnabled = false;
 
-  constructor(dataDirArg: string | null) {
+  constructor(dataDirArg: string | null, options: AppContextOptions = {}) {
+    this.pickDirectoryHandler = options.pickDirectory ?? pickDirectory;
     this.state = resolveBootstrapState(dataDirArg);
     if (this.state.dataDir) {
       this.initializeDataDir(this.state.dataDir, false);
@@ -62,6 +69,10 @@ export class AppContext {
 
   eventHub(): AppEventHub {
     return this.events;
+  }
+
+  pickDirectory(): DirectoryPickResponse | Promise<DirectoryPickResponse> {
+    return this.pickDirectoryHandler();
   }
 
   sessionIndexer(): SessionIndexService {

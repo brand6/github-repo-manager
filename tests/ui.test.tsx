@@ -4,6 +4,7 @@ import type {
   AppConfig,
   Project,
   ProjectDetail,
+  ProjectLocalSkillsState,
   ProjectRepairCandidate,
   ProjectToolTarget,
   RefreshResult,
@@ -35,10 +36,19 @@ const clientMock = vi.hoisted(() => ({
   previewDeleteSkillHubSkill: vi.fn(),
   deleteSkillHubSkill: vi.fn(),
   openSkillHubSkill: vi.fn(),
+  mcphub: vi.fn(),
+  importMcpHubJson: vi.fn(),
+  deleteMcpHubServer: vi.fn(),
   projectToolTargets: vi.fn(),
   updateProjectToolTargets: vi.fn(),
   projectSkillTargets: vi.fn(),
   updateProjectSkillTargets: vi.fn(),
+  projectLocalSkills: vi.fn(),
+  migrateProjectLocalSkill: vi.fn(),
+  projectMcp: vi.fn(),
+  applyProjectMcp: vi.fn(),
+  disableProjectMcp: vi.fn(),
+  migrateProjectLocalMcp: vi.fn(),
   ruleSyncStatus: vi.fn(),
   applyRuleSync: vi.fn(),
   commitRuleSync: vi.fn(),
@@ -85,8 +95,105 @@ describe("HomePage", () => {
     });
     clientMock.checkSkillHubUpdates.mockResolvedValue({ previews: [] });
     clientMock.openSkillHubSkill.mockResolvedValue({ opened: true, path: "C:\\tmp\\github-repo-manager\\skillhub\\library\\review\\SKILL.md" });
+    clientMock.mcphub.mockResolvedValue({
+      servers: [
+        {
+          serverId: "context7",
+          name: "context7",
+          description: "Context7 docs",
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "@upstash/context7-mcp"],
+          url: null,
+          headers: {},
+          env: {},
+          requiredEnv: [],
+          builtin: true,
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        },
+        {
+          serverId: "playwright",
+          name: "playwright",
+          description: "Playwright",
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "@playwright/mcp@latest"],
+          url: null,
+          headers: {},
+          env: {},
+          requiredEnv: [],
+          builtin: true,
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ]
+    });
+    clientMock.importMcpHubJson.mockResolvedValue({ added: [], updated: [], patched: [], failed: [] });
+    clientMock.deleteMcpHubServer.mockResolvedValue({
+      serverId: "context7",
+      deleted: true,
+      bindingsRemoved: [],
+      modifiedFiles: [],
+      skippedMissingFiles: [],
+      failures: []
+    });
     clientMock.projectToolTargets.mockResolvedValue([]);
     clientMock.projectSkillTargets.mockResolvedValue({ projectId: "project-1", toolTargets: [], skillTargets: [], skills: [] });
+    clientMock.projectLocalSkills.mockResolvedValue({ projectId: "project-1", toolTargets: [], migrationSources: [], skills: [] });
+    clientMock.projectMcp.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", targets: [], servers: [], bindings: [], localEntries: [] });
+    clientMock.applyProjectMcp.mockResolvedValue({
+      projectId: "project-1",
+      targetRootPath: "E:\\old",
+      toolId: "claude",
+      server: {
+        serverId: "context7",
+        name: "context7",
+        description: "Context7 docs",
+        transport: "stdio",
+        command: "npx",
+        args: [],
+        url: null,
+        headers: {},
+        env: {},
+        requiredEnv: [],
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-06-01T00:00:00Z"
+      },
+      binding: {
+        projectId: "project-1",
+        targetRootPath: "E:\\old",
+        toolId: "claude",
+        serverId: "context7",
+        appliedServerId: "context7",
+        appliedAt: "2026-06-01T00:00:00Z",
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-06-01T00:00:00Z"
+      },
+      configPath: "E:\\old\\.mcp.json",
+      warnings: []
+    });
+    clientMock.disableProjectMcp.mockResolvedValue({
+      projectId: "project-1",
+      targetRootPath: "E:\\old",
+      toolId: "claude",
+      serverId: "context7",
+      removedBinding: true,
+      modified: true,
+      configPath: "E:\\old\\.mcp.json",
+      reason: null
+    });
+    clientMock.migrateProjectLocalMcp.mockResolvedValue({
+      projectId: "project-1",
+      targetRootPath: "E:\\old",
+      serverId: "context7",
+      action: "migrated",
+      server: null,
+      bindings: [],
+      conflictTargets: [],
+      requiresConfirmation: false,
+      message: null
+    });
     clientMock.updateProjectToolTargets.mockResolvedValue([]);
     clientMock.updateProjectSkillTargets.mockResolvedValue({
       projectId: "project-1",
@@ -96,6 +203,15 @@ describe("HomePage", () => {
       conflicts: [],
       failures: [],
       requiresConfirmation: false
+    });
+    clientMock.migrateProjectLocalSkill.mockResolvedValue({
+      projectId: "project-1",
+      localSkill: null,
+      skill: null,
+      linkedTarget: null,
+      conflictSkills: [],
+      requiresConfirmation: false,
+      action: "migrated"
     });
     clientMock.ruleSyncStatus.mockResolvedValue(ruleSyncStatusFixture(projectFixture("E:\\old")));
     clientMock.applyRuleSync.mockResolvedValue({
@@ -213,6 +329,19 @@ describe("HomePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     expect(await screen.findByText("还没有项目")).toBeInTheDocument();
+  });
+
+  it("opens McpHub from the topbar", async () => {
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "McpHub" }));
+
+    expect(await screen.findByRole("heading", { name: "McpHub" })).toBeInTheDocument();
+    expect(clientMock.mcphub).toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "McpHub JSON 导入" })).toBeInTheDocument();
+    expect(screen.getByText("context7")).toBeInTheDocument();
+    expect(screen.queryByText("还没有 MCP server")).not.toBeInTheDocument();
   });
 
   it("separates SkillHub import/search and groups skills by source", async () => {
@@ -465,6 +594,26 @@ describe("HomePage", () => {
     expect(screen.queryByRole("dialog", { name: "新建项目" })).not.toBeInTheDocument();
   });
 
+  it("only offers installed CLI tools when creating a project", async () => {
+    clientMock.tools.mockResolvedValue([
+      toolStatusFixture("codex"),
+      {
+        ...toolStatusFixture("qwen"),
+        available: false,
+        reason: "未找到命令：qwen"
+      }
+    ]);
+
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
+
+    const dialog = screen.getByRole("dialog", { name: "新建项目" });
+    expect(within(dialog).getAllByText("codex").length).toBeGreaterThan(0);
+    expect(within(dialog).queryAllByText("qwen")).toHaveLength(0);
+  });
+
   it("scans the selected drive without confirming candidates", async () => {
     clientMock.drives.mockResolvedValue([
       { root: "E:\\", label: "E:\\" },
@@ -611,6 +760,43 @@ describe("HomePage", () => {
     expect(onApplyRuleSync).toHaveBeenCalledWith("agents-to-claude");
   });
 
+  it("hides unavailable CLI tools from the new session picker", () => {
+    const project = projectFixture("E:\\old");
+    const onLaunch = vi.fn();
+
+    render(
+      <ProjectDetailView
+        project={project}
+        detail={detailFixture(project)}
+        tools={[
+          toolStatusFixture("codex"),
+          {
+            ...toolStatusFixture("qwen"),
+            available: false,
+            reason: "未找到命令：qwen"
+          }
+        ]}
+        query=""
+        warnings={[]}
+        busy={false}
+        setQuery={vi.fn()}
+        onLaunch={onLaunch}
+        onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
+        repairCandidates={[]}
+        onRepairProject={vi.fn()}
+        onRelocateProject={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "新会话" }));
+    expect(screen.getByRole("button", { name: "codex" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "qwen" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "codex" }));
+    expect(onLaunch).toHaveBeenCalledWith("codex", project.rootPath);
+  });
+
   it("keeps project tool target editing out of the skill panel and only shows enabled tools inside a skill", async () => {
     const project = projectFixture("E:\\old");
     const localSource = skillHubSourceFixture("source-1", "local-source", "local");
@@ -678,6 +864,277 @@ describe("HomePage", () => {
     expect(within(panel).getByRole("checkbox", { name: "codex" })).toBeInTheDocument();
     expect(within(panel).getByRole("checkbox", { name: "opencode" })).toBeInTheDocument();
     expect(within(panel).queryByRole("checkbox", { name: "qwen" })).not.toBeInTheDocument();
+  });
+
+  it("opens the project local skill panel and lets a local skill use an existing SkillHub link", async () => {
+    const project = projectFixture("E:\\old");
+    const source = skillHubSourceFixture("source-1", "skills", "local");
+    const existingSkill = skillHubSkillFixture(source, "skill-1", "review", "SkillHub review");
+    const initialLocalSkills: ProjectLocalSkillsState = {
+      projectId: project.id,
+      toolTargets: [projectToolTargetFixture(project, "codex", true)],
+      migrationSources: [source],
+      skills: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          type: "skillhub",
+          folderName: "triage",
+          skillName: "Triage",
+          description: "SkillHub triage",
+          skillPath: `${project.rootPath}\\.codex\\skills\\triage`,
+          skillHubSkill: skillHubSkillFixture(source, "skill-2", "triage", "SkillHub triage"),
+          migratable: false,
+          reason: null
+        },
+        {
+          projectId: project.id,
+          toolId: "codex",
+          type: "local",
+          folderName: "review",
+          skillName: "Review",
+          description: "Local review",
+          skillPath: `${project.rootPath}\\.codex\\skills\\review`,
+          skillHubSkill: null,
+          migratable: true,
+          reason: null
+        }
+      ]
+    };
+    const migratedLocalSkills: ProjectLocalSkillsState = {
+      ...initialLocalSkills,
+      skills: [
+        initialLocalSkills.skills[0],
+        {
+          ...initialLocalSkills.skills[1],
+          type: "skillhub",
+          description: "SkillHub review",
+          skillHubSkill: existingSkill,
+          migratable: false
+        }
+      ]
+    };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectToolTargets.mockResolvedValue([projectToolTargetFixture(project, "codex", true)]);
+    clientMock.projectLocalSkills.mockResolvedValueOnce(initialLocalSkills).mockResolvedValueOnce(migratedLocalSkills);
+    clientMock.migrateProjectLocalSkill
+      .mockResolvedValueOnce({
+        projectId: project.id,
+        localSkill: initialLocalSkills.skills[1],
+        skill: null,
+        linkedTarget: null,
+        conflictSkills: [existingSkill],
+        requiresConfirmation: true,
+        action: "needs-confirmation"
+      })
+      .mockResolvedValueOnce({
+        projectId: project.id,
+        localSkill: initialLocalSkills.skills[1],
+        skill: existingSkill,
+        linkedTarget: null,
+        conflictSkills: [existingSkill],
+        requiresConfirmation: false,
+        action: "linked-existing"
+      });
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("2");
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    expect(screen.getByRole("button", { name: "技能" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    fireEvent.click(within(panel).getByRole("tab", { name: "本地技能" }));
+    expect(within(panel).getByRole("region", { name: "SkillHub 技能" })).toBeInTheDocument();
+    const localSection = within(panel).getByRole("region", { name: "Local 技能" });
+    expect(localSection).toBeInTheDocument();
+    fireEvent.click(within(localSection).getByRole("button", { name: "迁移到SkillHub" }));
+    const startButton = within(localSection).getByRole("button", { name: "开始迁移" });
+    expect(startButton).toBeDisabled();
+    fireEvent.click(within(localSection).getByRole("checkbox", { name: "选择 review" }));
+    expect(startButton).not.toBeDisabled();
+    fireEvent.click(startButton);
+
+    const dialog = await screen.findByRole("dialog", { name: "迁移技能" });
+    fireEvent.change(within(dialog).getByLabelText("迁移目录"), { target: { value: source.id } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "开始迁移" }));
+
+    await waitFor(() => expect(prompt).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(clientMock.migrateProjectLocalSkill).toHaveBeenLastCalledWith(project.id, "codex", "review", "link-existing", project.rootPath, {
+        type: "existing-source",
+        sourceId: source.id
+      })
+    );
+    expect(await screen.findByText("本地技能已换成 SkillHub link")).toBeInTheDocument();
+  });
+
+  it("lets a project local skill migrate into a new local source directory", async () => {
+    const project = projectFixture("E:\\old");
+    const newSource = skillHubSourceFixture("source-new", "team-source", "local");
+    const migratedSkill = skillHubSkillFixture(newSource, "skill-new", "review", "Local review");
+    const initialLocalSkills: ProjectLocalSkillsState = {
+      projectId: project.id,
+      toolTargets: [projectToolTargetFixture(project, "codex", true)],
+      migrationSources: [],
+      skills: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          type: "local",
+          folderName: "review",
+          skillName: "Review",
+          description: "Local review",
+          skillPath: `${project.rootPath}\\.codex\\skills\\review`,
+          skillHubSkill: null,
+          migratable: true,
+          reason: null
+        }
+      ]
+    };
+    const migratedLocalSkills: ProjectLocalSkillsState = {
+      ...initialLocalSkills,
+      migrationSources: [newSource],
+      skills: [
+        {
+          ...initialLocalSkills.skills[0],
+          type: "skillhub",
+          skillHubSkill: migratedSkill,
+          migratable: false
+        }
+      ]
+    };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectToolTargets.mockResolvedValue([projectToolTargetFixture(project, "codex", true)]);
+    clientMock.projectLocalSkills.mockResolvedValueOnce(initialLocalSkills).mockResolvedValueOnce(migratedLocalSkills);
+    clientMock.pickDirectory.mockResolvedValueOnce({ path: "E:\\SkillSources\\team-source", cancelled: false });
+    clientMock.migrateProjectLocalSkill.mockResolvedValueOnce({
+      projectId: project.id,
+      localSkill: initialLocalSkills.skills[0],
+      skill: migratedSkill,
+      linkedTarget: null,
+      conflictSkills: [],
+      requiresConfirmation: false,
+      action: "migrated"
+    });
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    fireEvent.click(within(panel).getByRole("tab", { name: "本地技能" }));
+    const localSection = within(panel).getByRole("region", { name: "Local 技能" });
+    fireEvent.click(within(localSection).getByRole("button", { name: "迁移到SkillHub" }));
+    const startButton = within(localSection).getByRole("button", { name: "开始迁移" });
+    fireEvent.click(within(localSection).getByRole("checkbox", { name: "选择 review" }));
+    expect(startButton).not.toBeDisabled();
+    fireEvent.click(startButton);
+
+    const dialog = await screen.findByRole("dialog", { name: "迁移技能" });
+    fireEvent.change(within(dialog).getByLabelText("迁移目录"), { target: { value: "__new-local-source__" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择目录" }));
+    await waitFor(() => expect(within(dialog).getByLabelText("新 source 目录")).toHaveValue("E:\\SkillSources\\team-source"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "开始迁移" }));
+
+    await waitFor(() =>
+      expect(clientMock.migrateProjectLocalSkill).toHaveBeenLastCalledWith(project.id, "codex", "review", null, project.rootPath, {
+        type: "new-source",
+        path: "E:\\SkillSources\\team-source"
+      })
+    );
+    expect(await screen.findByText("本地技能已迁移到 SkillHub")).toBeInTheDocument();
+  });
+
+  it("opens project skill management for the selected child session group", async () => {
+    const project = projectFixture("E:\\repo");
+    const childRoot = "E:\\repo\\packages\\app";
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailWithChildGroup(project, childRoot));
+
+    render(<App />);
+
+    await screen.findByText("repo");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    const childHeading = await screen.findByRole("heading", { name: "packages\\app" });
+    const childGroup = childHeading.closest(".session-group") as HTMLElement;
+
+    fireEvent.click(within(childGroup).getByRole("button", { name: "技能" }));
+    await waitFor(() => expect(clientMock.projectSkillTargets).toHaveBeenLastCalledWith(project.id, childRoot));
+    await waitFor(() => expect(clientMock.projectLocalSkills).toHaveBeenLastCalledWith(project.id, childRoot));
+
+    fireEvent.click(within(childGroup).getByRole("button", { name: "MCP" }));
+    await waitFor(() => expect(clientMock.projectMcp).toHaveBeenLastCalledWith(project.id, childRoot));
+  });
+
+  it("applies a McpHub server from the project MCP panel", async () => {
+    const project = projectFixture("E:\\old");
+    const server = {
+      serverId: "context7",
+      name: "context7",
+      description: "Context7 docs",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@upstash/context7-mcp"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: [],
+      createdAt: "2026-06-01T00:00:00Z",
+      updatedAt: "2026-06-01T00:00:00Z"
+    };
+    const initialProjectMcp = {
+      projectId: project.id,
+      targetRootPath: project.rootPath,
+      targets: [{ toolId: "claude", label: "Claude Code", supported: true, configPath: `${project.rootPath}\\.mcp.json`, reason: null }],
+      servers: [server],
+      bindings: [],
+      localEntries: []
+    };
+    const appliedProjectMcp = {
+      ...initialProjectMcp,
+      bindings: [
+        {
+          projectId: project.id,
+          targetRootPath: project.rootPath,
+          toolId: "claude",
+          serverId: "context7",
+          appliedServerId: "context7",
+          appliedAt: "2026-06-01T00:00:00Z",
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ]
+    };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectMcp.mockResolvedValueOnce(initialProjectMcp).mockResolvedValueOnce(appliedProjectMcp);
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目 MCP 管理" });
+    fireEvent.click(within(panel).getByRole("button", { name: "McpHub MCP" }));
+    const serverRow = within(panel).getByText("context7").closest("details");
+    expect(serverRow).not.toHaveAttribute("open");
+    fireEvent.click(within(serverRow as HTMLElement).getByText("context7"));
+    expect(serverRow).toHaveAttribute("open");
+    fireEvent.click(within(panel).getByRole("checkbox", { name: "claude" }));
+
+    await waitFor(() => expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "claude", project.rootPath));
+    expect(await screen.findByText("MCP 已应用到项目")).toBeInTheDocument();
   });
 
   it("shows merge repair candidates for missing cwd projects", () => {
@@ -904,6 +1361,10 @@ describe("HomePage", () => {
     expect(within(topbar).getByRole("button", { name: "设置" })).toBeInTheDocument();
     expect(within(topbar).queryByRole("button", { name: "规则同步" })).not.toBeInTheDocument();
     expect(within(topbar).queryByRole("button", { name: "刷新索引" })).not.toBeInTheDocument();
+    expect(within(topbar).queryByRole("button", { name: "技能" })).not.toBeInTheDocument();
+    expect(within(topbar).queryByRole("button", { name: "MCP" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "技能" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "MCP" })).toBeInTheDocument();
     expect(container.querySelector(".detail-head")).toBeNull();
   });
 

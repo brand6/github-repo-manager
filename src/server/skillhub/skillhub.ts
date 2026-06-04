@@ -4,6 +4,12 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type {
   AppConfig,
+  Project,
+  ProjectLocalSkill,
+  ProjectLocalSkillMigrationMode,
+  ProjectLocalSkillMigrationResult,
+  ProjectLocalSkillMigrationTarget,
+  ProjectLocalSkillsState,
   ProjectSkillTarget,
   SkillHubConfig,
   SkillHubDeletePreview,
@@ -16,12 +22,14 @@ import type {
   SkillHubSourceUpdatePreview,
   SkillHubUpdateCheckResult,
   SkillHubUpdateItem,
-  LocalOpenResponse
+  LocalOpenResponse,
+  ToolId
 } from "../../shared/types.js";
 import type { AppDatabase } from "../storage/database.js";
 import { nowIso } from "../core/time.js";
 import { openLocalPath } from "../core/localFilesystem.js";
-import { removeDirectoryLink } from "./links.js";
+import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "./links.js";
+import { listProjectToolTargets } from "./projectSkills.js";
 
 interface ImportOptions {
   overwrite?: boolean;
@@ -48,6 +56,14 @@ interface GitHubInput {
   branch: string | null;
   inputPath: string | null;
   remoteUrl: string;
+}
+
+interface LocalSkillMigrationTargetPlan {
+  source: SkillHubSource;
+  libraryRelativePath: string;
+  libraryPath: string;
+  sourceRelativePath: string | null;
+  sourceSkillPath: string | null;
 }
 
 const DIRECT_SKILLS_SOURCE_ID = "skills";
@@ -241,6 +257,404 @@ export function openSkillHubSkill(database: AppDatabase, skillId: string, target
   const skill = database.getSkillHubSkill(skillId);
   if (!skill) throw new Error("SkillHub skill not found");
   return openLocalPath(target === "document" ? path.join(skill.libraryPath, "SKILL.md") : skill.libraryPath);
+}
+
+export function listProjectLocalSkillsState(database: AppDatabase, project: Project): ProjectLocalSkillsState {
+  const toolTargets = listProjectToolTargets(database, project);
+  const skillHubSkills = database.listSkillHubSkills();
+  const skills: ProjectLocalSkill[] = [];
+
+  for (const target of toolTargets) {
+    if (!target.supported || !target.skillDirectory || !fs.existsSync(target.skillDirectory)) continue;
+    const entries = fs.readdirSync(target.skillDirectory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const skillPath = path.join(target.skillDirectory, entry.name);
+      if (!hasSkillMarker(skillPath)) continue;
+      const linkedSkill = skillHubSkills.find((skill) => linkPointsTo(skillPath, skill.libraryPath)) ?? null;
+      const metadata = readSkillMetadata(path.join(skillPath, "SKILL.md"));
+      const isLink = fs.lstatSync(skillPath).isSymbolicLink();
+      skills.push({
+        projectId: project.id,
+        toolId: target.toolId,
+        type: linkedSkill ? "skillhub" : "local",
+        folderName: entry.name,
+        skillName: linkedSkill?.skillName ?? metadata.name,
+        description: linkedSkill?.description ?? metadata.description,
+        skillPath,
+        skillHubSkill: linkedSkill,
+        migratable: !linkedSkill && !isLink,
+        reason: !linkedSkill && isLink ? "目标是外部 link，不能自动迁移" : null
+      });
+    }
+  }
+
+  skills.sort((left, right) => left.type.localeCompare(right.type) || left.toolId.localeCompare(right.toolId) || left.folderName.localeCompare(right.folderName));
+  return { projectId: project.id, toolTargets, migrationSources: database.listSkillHubSources().filter((source) => source.type === "local"), skills };
+}
+
+export function migrateProjectLocalSkill(
+  database: AppDatabase,
+  config: AppConfig,
+  dataDir: string,
+  project: Project,
+  toolId: ToolId,
+  folderName: string,
+  mode: ProjectLocalSkillMigrationMode | null = null,
+  target: ProjectLocalSkillMigrationTarget | null = null
+): ProjectLocalSkillMigrationResult {
+  const resolved = ensureSkillHub(config, dataDir);
+  const localSkill = findProjectLocalSkill(database, project, toolId, folderName);
+  if (!localSkill) throw new Error("未找到本地技能");
+  if (localSkill.type !== "local") throw new Error("该技能已经是 SkillHub link");
+  if (!localSkill.migratable) throw new Error(localSkill.reason ?? "该技能不能自动迁移");
+
+  if (!target) {
+    const conflictSkills = sameNameSkillHubSkills(database, localSkill.folderName);
+    if (conflictSkills.length > 0 && !mode) {
+      return {
+        projectId: project.id,
+        localSkill,
+        skill: null,
+        linkedTarget: null,
+        conflictSkills,
+        requiresConfirmation: true,
+        action: "needs-confirmation"
+      };
+    }
+
+    const existingSkill = conflictSkills[0] ?? null;
+    if (existingSkill && mode === "link-existing") {
+      const linkedTarget = replaceLocalSkillWithLink(database, project.id, localSkill, existingSkill);
+      return {
+        projectId: project.id,
+        localSkill,
+        skill: existingSkill,
+        linkedTarget,
+        conflictSkills,
+        requiresConfirmation: false,
+        action: "linked-existing"
+      };
+    }
+
+    if (existingSkill && mode === "overwrite-skillhub") {
+      const { skill: overwritten, linkedTarget } = overwriteSkillHubSkillAndLinkLocal(database, project.id, existingSkill, localSkill);
+      return {
+        projectId: project.id,
+        localSkill,
+        skill: overwritten,
+        linkedTarget,
+        conflictSkills,
+        requiresConfirmation: false,
+        action: "overwrote-skillhub"
+      };
+    }
+
+    const imported = importLocalSkills(database, config, dataDir, localSkill.skillPath);
+    const skill =
+      imported.imported[0] ??
+      imported.updated[0] ??
+      database.getSkillHubSkillByLibraryRelativePath(normalizeRelativePath(path.join(DIRECT_SKILLS_SOURCE_ID, localSkill.folderName)));
+    if (!skill) throw new Error("本地技能导入 SkillHub 失败");
+    const linkedTarget = replaceLocalSkillWithLink(database, project.id, localSkill, skill);
+    assignDirectLibrarySkillsSource(database, resolved.libraryDir);
+    return {
+      projectId: project.id,
+      localSkill,
+      skill,
+      linkedTarget,
+      conflictSkills: [],
+      requiresConfirmation: false,
+      action: "migrated"
+    };
+  }
+
+  const targetPlan = resolveLocalSkillMigrationTarget(database, resolved.libraryDir, target, localSkill);
+  const targetConflict = database.getSkillHubSkillByLibraryRelativePath(targetPlan.libraryRelativePath);
+  const conflictSkills = targetConflict ? [targetConflict] : [];
+  if (targetConflict && !mode) {
+    return {
+      projectId: project.id,
+      localSkill,
+      skill: null,
+      linkedTarget: null,
+      conflictSkills,
+      requiresConfirmation: true,
+      action: "needs-confirmation"
+    };
+  }
+
+  if (targetConflict && mode === "link-existing") {
+    const linkedTarget = replaceLocalSkillWithLink(database, project.id, localSkill, targetConflict);
+    return {
+      projectId: project.id,
+      localSkill,
+      skill: targetConflict,
+      linkedTarget,
+      conflictSkills,
+      requiresConfirmation: false,
+      action: "linked-existing"
+    };
+  }
+
+  const imported = importProjectLocalSkillIntoTarget(database, resolved.libraryDir, localSkill, targetPlan, { overwrite: targetConflict ? mode === "overwrite-skillhub" : false });
+  if (imported.requiresConfirmation) {
+    return {
+      projectId: project.id,
+      localSkill,
+      skill: null,
+      linkedTarget: null,
+      conflictSkills: imported.conflicts.map((conflict) => conflict.existingSkill),
+      requiresConfirmation: true,
+      action: "needs-confirmation"
+    };
+  }
+
+  const skill = imported.imported[0] ?? imported.updated[0] ?? database.getSkillHubSkillByLibraryRelativePath(targetPlan.libraryRelativePath);
+  if (!skill) throw new Error("本地技能导入 SkillHub 失败");
+  const linkedTarget = replaceLocalSkillWithLink(database, project.id, localSkill, skill);
+  return {
+    projectId: project.id,
+    localSkill,
+    skill,
+    linkedTarget,
+    conflictSkills,
+    requiresConfirmation: false,
+    action: targetConflict ? "overwrote-skillhub" : "migrated"
+  };
+}
+
+function findProjectLocalSkill(database: AppDatabase, project: Project, toolId: ToolId, folderName: string): ProjectLocalSkill | null {
+  if (!isSafeSkillFolderName(folderName)) return null;
+  return listProjectLocalSkillsState(database, project).skills.find((skill) => skill.toolId === toolId && skill.folderName === folderName) ?? null;
+}
+
+function sameNameSkillHubSkills(database: AppDatabase, folderName: string): SkillHubSkill[] {
+  const normalized = folderName.toLowerCase();
+  return database.listSkillHubSkills().filter((skill) => skill.folderName.toLowerCase() === normalized);
+}
+
+function resolveLocalSkillMigrationTarget(
+  database: AppDatabase,
+  libraryDir: string,
+  target: ProjectLocalSkillMigrationTarget,
+  localSkill: ProjectLocalSkill
+): LocalSkillMigrationTargetPlan {
+  if (target.type === "existing-source") {
+    if (target.sourceId === DIRECT_SKILLS_SOURCE_ID) {
+      return directSkillsMigrationTarget(database, libraryDir, localSkill.folderName);
+    }
+    const source = database.getSkillHubSource(target.sourceId);
+    if (!source) throw new Error("未找到目标 SkillHub source");
+    if (source.type !== "local") throw new Error("项目内技能只能迁移到 local source");
+    return localSourceMigrationTarget(libraryDir, source, localSkill);
+  }
+
+  const sourcePath = path.resolve(target.path);
+  if (isPathInsideOrEqual(localSkill.skillPath, sourcePath)) {
+    throw new Error("目标 source 目录不能位于当前技能目录内");
+  }
+  fs.mkdirSync(sourcePath, { recursive: true });
+  const existing = findLocalSourceByResolvedPath(database, sourcePath);
+  const source =
+    existing ??
+    database.upsertSkillHubSource({
+      id: crypto.randomUUID(),
+      type: "local",
+      label: target.label?.trim() || path.basename(sourcePath) || sourcePath,
+      repoKey: null,
+      owner: null,
+      repo: null,
+      branch: null,
+      input: sourcePath,
+      inputPath: null,
+      resolvedPath: sourcePath,
+      currentRevision: null,
+      checkoutPath: null
+    });
+  if (source.id === DIRECT_SKILLS_SOURCE_ID) {
+    return directSkillsMigrationTarget(database, libraryDir, localSkill.folderName);
+  }
+  return localSourceMigrationTarget(libraryDir, source, localSkill);
+}
+
+function directSkillsMigrationTarget(database: AppDatabase, libraryDir: string, folderName: string): LocalSkillMigrationTargetPlan {
+  const source = upsertDirectSkillsSource(database, libraryDir);
+  const libraryRelativePath = normalizeRelativePath(path.join(DIRECT_SKILLS_SOURCE_ID, folderName));
+  return {
+    source,
+    libraryRelativePath,
+    libraryPath: safeLibraryPath(libraryDir, libraryRelativePath),
+    sourceRelativePath: folderName,
+    sourceSkillPath: null
+  };
+}
+
+function localSourceMigrationTarget(libraryDir: string, source: SkillHubSource, localSkill: ProjectLocalSkill): LocalSkillMigrationTargetPlan {
+  const sourceRoot = localSourceRoot(source);
+  const prefix = localSourceLibraryPrefix(source, sourceRoot);
+  const libraryRelativePath = normalizeRelativePath(path.join(prefix, localSkill.folderName));
+  const sourceSkillPath = path.join(sourceRoot, "skills", localSkill.folderName);
+  if (isPathInsideOrEqual(localSkill.skillPath, sourceSkillPath)) {
+    throw new Error("目标 source 技能目录不能位于当前技能目录内");
+  }
+  return {
+    source,
+    libraryRelativePath,
+    libraryPath: safeLibraryPath(libraryDir, libraryRelativePath),
+    sourceRelativePath: libraryRelativePath,
+    sourceSkillPath
+  };
+}
+
+function importProjectLocalSkillIntoTarget(
+  database: AppDatabase,
+  libraryDir: string,
+  localSkill: ProjectLocalSkill,
+  target: LocalSkillMigrationTargetPlan,
+  options: ImportOptions
+): SkillHubImportResult {
+  let discoveryPath = localSkill.skillPath;
+  if (target.sourceSkillPath) {
+    if (pathExists(target.sourceSkillPath) && !options.overwrite) {
+      throw new Error("目标 source 中已存在同名技能目录");
+    }
+    replaceDirectory(localSkill.skillPath, target.sourceSkillPath);
+    discoveryPath = target.sourceSkillPath;
+  }
+
+  const metadata = readSkillMetadata(path.join(discoveryPath, "SKILL.md"));
+  const discovery: DiscoveredSkill = {
+    path: discoveryPath,
+    folderName: localSkill.folderName,
+    skillName: metadata.name,
+    description: metadata.description,
+    sourceRelativePath: target.sourceRelativePath,
+    libraryRelativePath: target.libraryRelativePath,
+    contentHash: hashDirectory(discoveryPath)
+  };
+  return commitDiscoveredSkills(database, libraryDir, target.source, [discovery], [], options);
+}
+
+function localSourceRoot(source: SkillHubSource): string {
+  const sourcePath = source.resolvedPath ?? source.input;
+  if (!sourcePath) throw new Error("local source 缺少目录路径");
+  return path.resolve(sourcePath);
+}
+
+function localSourceLibraryPrefix(source: SkillHubSource, sourceRoot: string): string {
+  const segment = path.basename(sourceRoot) || source.label || source.id;
+  return normalizeRelativePath(path.join(segment, "skills"));
+}
+
+function findLocalSourceByResolvedPath(database: AppDatabase, sourcePath: string): SkillHubSource | null {
+  const normalized = path.resolve(sourcePath).toLowerCase();
+  return (
+    database
+      .listSkillHubSources()
+      .filter((source) => source.type === "local")
+      .find((source) => {
+        const candidate = source.resolvedPath ?? source.input;
+        return candidate ? path.resolve(candidate).toLowerCase() === normalized : false;
+      }) ?? null
+  );
+}
+
+function isPathInsideOrEqual(parent: string, child: string): boolean {
+  const normalizedParent = path.resolve(parent).toLowerCase();
+  const normalizedChild = path.resolve(child).toLowerCase();
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}${path.sep}`);
+}
+
+function overwriteSkillHubSkillAndLinkLocal(
+  database: AppDatabase,
+  projectId: string,
+  existingSkill: SkillHubSkill,
+  localSkill: ProjectLocalSkill
+): { skill: SkillHubSkill; linkedTarget: ProjectSkillTarget } {
+  const metadata = readSkillMetadata(path.join(localSkill.skillPath, "SKILL.md"));
+  const contentHash = hashDirectory(localSkill.skillPath);
+  const backupPath = nextMigrationBackupPath(localSkill.skillPath);
+  fs.renameSync(localSkill.skillPath, backupPath);
+  try {
+    replaceDirectory(backupPath, existingSkill.libraryPath);
+    createDirectoryLink(existingSkill.libraryPath, localSkill.skillPath);
+    fs.rmSync(backupPath, { recursive: true, force: true });
+  } catch (error) {
+    removeCreatedLinkIfPresent(localSkill.skillPath);
+    if (!pathExists(localSkill.skillPath) && pathExists(backupPath)) {
+      fs.renameSync(backupPath, localSkill.skillPath);
+    }
+    throw error;
+  }
+  const skill = database.upsertSkillHubSkill({
+    id: existingSkill.id,
+    sourceId: existingSkill.sourceId,
+    sourceType: existingSkill.sourceType,
+    folderName: localSkill.folderName,
+    skillName: metadata.name,
+    description: metadata.description,
+    libraryRelativePath: existingSkill.libraryRelativePath,
+    libraryPath: existingSkill.libraryPath,
+    sourceRelativePath: existingSkill.sourceRelativePath,
+    contentHash
+  });
+  return { skill, linkedTarget: upsertLocalSkillTarget(database, projectId, localSkill, skill) };
+}
+
+function replaceLocalSkillWithLink(database: AppDatabase, projectId: string, localSkill: ProjectLocalSkill, skill: SkillHubSkill): ProjectSkillTarget {
+  replaceLocalDirectoryWithLink(localSkill.skillPath, skill.libraryPath);
+  return upsertLocalSkillTarget(database, projectId, localSkill, skill);
+}
+
+function upsertLocalSkillTarget(database: AppDatabase, projectId: string, localSkill: ProjectLocalSkill, skill: SkillHubSkill): ProjectSkillTarget {
+  const existingTarget = database.getProjectSkillTargetByLinkPath(projectId, localSkill.toolId, localSkill.skillPath);
+  if (existingTarget && existingTarget.skillId !== skill.id) {
+    database.deleteProjectSkillTargetByLinkPath(projectId, localSkill.toolId, localSkill.skillPath);
+  }
+  return database.upsertProjectSkillTarget({
+    projectId,
+    toolId: localSkill.toolId,
+    skillId: skill.id,
+    linkPath: localSkill.skillPath,
+    targetPath: skill.libraryPath
+  });
+}
+
+function replaceLocalDirectoryWithLink(localPath: string, targetPath: string): void {
+  const backupPath = nextMigrationBackupPath(localPath);
+  fs.renameSync(localPath, backupPath);
+  try {
+    createDirectoryLink(targetPath, localPath);
+    fs.rmSync(backupPath, { recursive: true, force: true });
+  } catch (error) {
+    removeCreatedLinkIfPresent(localPath);
+    if (!pathExists(localPath) && pathExists(backupPath)) {
+      fs.renameSync(backupPath, localPath);
+    }
+    throw error;
+  }
+}
+
+function removeCreatedLinkIfPresent(linkPath: string): void {
+  try {
+    if (fs.lstatSync(linkPath).isSymbolicLink()) fs.unlinkSync(linkPath);
+  } catch {
+    // Missing or inaccessible partial links are handled by the restore path.
+  }
+}
+
+function nextMigrationBackupPath(localPath: string): string {
+  for (let index = 0; index < 100; index += 1) {
+    const suffix = index === 0 ? "" : `-${index}`;
+    const backupPath = `${localPath}.skillhub-migration-${Date.now()}${suffix}`;
+    if (!pathExists(backupPath)) return backupPath;
+  }
+  throw new Error("无法创建本地技能迁移备份路径");
+}
+
+function isSafeSkillFolderName(folderName: string): boolean {
+  return folderName.trim().length > 0 && path.basename(folderName) === folderName && !folderName.includes("/") && !folderName.includes("\\");
 }
 
 function commitDiscoveredSkills(
@@ -587,7 +1001,7 @@ function replaceDirectory(source: string, target: string): void {
 function removeTargets(database: AppDatabase, targets: ProjectSkillTarget[]): void {
   for (const target of targets) {
     removeDirectoryLink(target.linkPath);
-    database.deleteProjectSkillTarget(target.projectId, target.toolId, target.skillId);
+    database.deleteProjectSkillTarget(target.projectId, target.toolId, target.skillId, target.linkPath);
   }
 }
 

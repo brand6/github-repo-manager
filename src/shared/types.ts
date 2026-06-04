@@ -197,6 +197,164 @@ export interface ProjectSkillUpdateResult {
   requiresConfirmation: boolean;
 }
 
+export type ProjectLocalSkillType = "skillhub" | "local";
+export type ProjectLocalSkillMigrationMode = "overwrite-skillhub" | "link-existing";
+export type ProjectLocalSkillMigrationAction = "migrated" | "overwrote-skillhub" | "linked-existing" | "needs-confirmation";
+export type ProjectLocalSkillMigrationTarget =
+  | { type: "existing-source"; sourceId: string }
+  | { type: "new-source"; path: string; label?: string | null };
+
+export interface ProjectLocalSkill {
+  projectId: string;
+  toolId: ToolId;
+  type: ProjectLocalSkillType;
+  folderName: string;
+  skillName: string | null;
+  description: string | null;
+  skillPath: string;
+  skillHubSkill: SkillHubSkill | null;
+  migratable: boolean;
+  reason: string | null;
+}
+
+export interface ProjectLocalSkillsState {
+  projectId: string;
+  toolTargets: ProjectToolTarget[];
+  migrationSources: SkillHubSource[];
+  skills: ProjectLocalSkill[];
+}
+
+export interface ProjectLocalSkillMigrationResult {
+  projectId: string;
+  localSkill: ProjectLocalSkill;
+  skill: SkillHubSkill | null;
+  linkedTarget: ProjectSkillTarget | null;
+  conflictSkills: SkillHubSkill[];
+  requiresConfirmation: boolean;
+  action: ProjectLocalSkillMigrationAction;
+}
+
+export type McpHubTransport = "stdio" | "http";
+export type McpHubTargetToolId = Extract<ToolId, "claude" | "codex" | "opencode">;
+
+export interface McpHubServer {
+  serverId: string;
+  name: string | null;
+  description: string | null;
+  transport: McpHubTransport;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  headers: Record<string, string>;
+  env: Record<string, string>;
+  requiredEnv: string[];
+  builtin?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface McpHubList {
+  servers: McpHubServer[];
+}
+
+export interface McpHubImportFailure {
+  serverId: string | null;
+  reason: string;
+}
+
+export interface McpHubImportResult {
+  added: McpHubServer[];
+  updated: McpHubServer[];
+  patched: McpHubServer[];
+  failed: McpHubImportFailure[];
+}
+
+export interface ProjectMcpBinding {
+  projectId: string;
+  targetRootPath: string;
+  toolId: McpHubTargetToolId;
+  serverId: string;
+  appliedServerId: string;
+  appliedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProjectLocalMcpStatus = "managed" | "unmanaged" | "invalid";
+
+export interface ProjectLocalMcpEntry {
+  projectId: string;
+  targetRootPath: string;
+  toolId: McpHubTargetToolId;
+  serverId: string;
+  filePath: string;
+  status: ProjectLocalMcpStatus;
+  server: McpHubServer | null;
+  reason: string | null;
+}
+
+export interface ProjectMcpTarget {
+  toolId: McpHubTargetToolId;
+  label: string;
+  supported: boolean;
+  configPath: string;
+  reason: string | null;
+}
+
+export interface ProjectMcpState {
+  projectId: string;
+  targetRootPath: string;
+  targets: ProjectMcpTarget[];
+  servers: McpHubServer[];
+  bindings: ProjectMcpBinding[];
+  localEntries: ProjectLocalMcpEntry[];
+}
+
+export interface ProjectMcpApplyResult {
+  projectId: string;
+  targetRootPath: string;
+  toolId: McpHubTargetToolId;
+  server: McpHubServer;
+  binding: ProjectMcpBinding;
+  configPath: string;
+  warnings: string[];
+}
+
+export interface ProjectMcpDisableResult {
+  projectId: string;
+  targetRootPath: string;
+  toolId: McpHubTargetToolId;
+  serverId: string;
+  removedBinding: boolean;
+  modified: boolean;
+  configPath: string;
+  reason: string | null;
+}
+
+export interface McpHubCleanupReport {
+  serverId: string;
+  deleted: boolean;
+  bindingsRemoved: ProjectMcpBinding[];
+  modifiedFiles: string[];
+  skippedMissingFiles: string[];
+  failures: Array<{ path: string; reason: string }>;
+}
+
+export type ProjectLocalMcpMigrationMode = "link-existing" | "overwrite-mcphub";
+export type ProjectLocalMcpMigrationAction = "migrated" | "linked-existing" | "overwrote-mcphub" | "needs-confirmation";
+
+export interface ProjectLocalMcpMigrationResult {
+  projectId: string;
+  targetRootPath: string;
+  serverId: string;
+  action: ProjectLocalMcpMigrationAction;
+  server: McpHubServer | null;
+  bindings: ProjectMcpBinding[];
+  conflictTargets: McpHubTargetToolId[];
+  requiresConfirmation: boolean;
+  message: string | null;
+}
+
 export type SkillHubUpdateKind = "added" | "changed" | "deleted" | "moved";
 
 export interface SkillHubUpdateItem {

@@ -70,11 +70,16 @@ describe("API", () => {
     process.env.APPDATA = path.join(directory, "roaming");
     process.env.LOCALAPPDATA = path.join(directory, "local");
     try {
-      context = new AppContext(null);
+      const pickedPath = path.join(directory, "picked");
+      context = new AppContext(null, {
+        pickDirectory: async () => ({ path: pickedPath, cancelled: false })
+      });
       const app = await createHttpApp(context, { dev: false, serveClient: false });
 
       expect(context.bootstrapState().initialized).toBe(false);
       await request(app).get("/api/local-filesystem/drives").set("x-local-api-token", context.token).expect(200);
+      const picked = await request(app).post("/api/local-filesystem/pick-directory").set("x-local-api-token", context.token).expect(200);
+      expect(picked.body).toEqual({ path: pickedPath, cancelled: false });
       await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(409);
     } finally {
       process.env.APPDATA = previousAppData;

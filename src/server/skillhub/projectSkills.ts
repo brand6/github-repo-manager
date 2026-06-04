@@ -11,6 +11,7 @@ import type {
   ToolId
 } from "../../shared/types.js";
 import type { AppDatabase } from "../storage/database.js";
+import { isPathInsideOrEqual } from "../core/pathUtils.js";
 import { toolAdapters } from "../tools/adapters.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "./links.js";
 
@@ -41,10 +42,11 @@ export function updateProjectToolTargets(database: AppDatabase, project: Project
 }
 
 export function listProjectSkillTargetsState(database: AppDatabase, project: Project): ProjectSkillTargetsState {
+  const toolTargets = listProjectToolTargets(database, project);
   return {
     projectId: project.id,
-    toolTargets: listProjectToolTargets(database, project),
-    skillTargets: database.listProjectSkillTargets(project.id),
+    toolTargets,
+    skillTargets: scopedProjectSkillTargets(database, project.id, toolTargets),
     skills: database.listSkillHubSkills()
   };
 }
@@ -59,8 +61,9 @@ export function setProjectSkillTargets(
   const skill = database.getSkillHubSkill(skillId);
   if (!skill) throw new Error("SkillHub skill not found");
   const targetIds = new Set(uniqueToolIds(toolIds));
-  const toolTargets = new Map(listProjectToolTargets(database, project).map((target) => [target.toolId, target]));
-  const currentTargets = database.listProjectSkillTargets(project.id).filter((target) => target.skillId === skillId);
+  const toolTargetList = listProjectToolTargets(database, project);
+  const toolTargets = new Map(toolTargetList.map((target) => [target.toolId, target]));
+  const currentTargets = scopedProjectSkillTargets(database, project.id, toolTargetList).filter((target) => target.skillId === skillId);
   const removed: ProjectSkillTarget[] = [];
   const targets: ProjectSkillTarget[] = [];
   const conflicts: ProjectSkillConflict[] = [];
@@ -70,7 +73,7 @@ export function setProjectSkillTargets(
     if (targetIds.has(current.toolId)) continue;
     const removal = removeDirectoryLink(current.linkPath);
     if (!removal.reason || removal.missing) {
-      database.deleteProjectSkillTarget(current.projectId, current.toolId, current.skillId);
+      database.deleteProjectSkillTarget(current.projectId, current.toolId, current.skillId, current.linkPath);
       removed.push(current);
     } else {
       failures.push(failure(current.projectId, current.toolId, current.skillId, current.linkPath, current.targetPath, removal.reason));
@@ -145,13 +148,25 @@ export function setProjectSkillTargets(
   };
 }
 
+function scopedProjectSkillTargets(database: AppDatabase, projectId: string, toolTargets: ProjectToolTarget[]): ProjectSkillTarget[] {
+  const skillDirectories = toolTargets
+    .filter((target) => target.supported && target.skillDirectory)
+    .map((target) => target.skillDirectory as string);
+  if (skillDirectories.length === 0) return [];
+  return database.listProjectSkillTargets(projectId).filter((target) =>
+    skillDirectories.some((skillDirectory) => isPathInsideOrEqual(skillDirectory, target.linkPath))
+  );
+}
+
 export function ensureProjectToolTargets(database: AppDatabase, project: Project): void {
-  const stored = new Set(database.listStoredProjectToolTargets(project.id).map((target) => target.toolId));
-  if (stored.size === allToolIds.length) return;
+  const stored = new Map(database.listStoredProjectToolTargets(project.id).map((target) => [target.toolId, target]));
   const inferred = inferProjectToolIds(database, project);
   for (const toolId of allToolIds) {
-    if (stored.has(toolId)) continue;
-    database.upsertProjectToolTarget(project.id, toolId, inferred.has(toolId), true);
+    const existing = stored.get(toolId);
+    const enabled = inferred.has(toolId);
+    if (existing && !existing.inferred) continue;
+    if (existing && existing.enabled === enabled) continue;
+    database.upsertProjectToolTarget(project.id, toolId, enabled, true);
   }
 }
 
@@ -174,7 +189,7 @@ const projectTraceMap: Record<ToolId, string[]> = {
   opencode: [".opencode", "OPENCODE.md"],
   qwen: [".qwen", "QWEN.md"],
   qoder: [".qoder", "QODER.md"],
-  copilot: [".github/copilot-instructions.md", ".github", ".vscode"]
+  copilot: [".github/copilot-instructions.md"]
 };
 
 function uniqueToolIds(toolIds: ToolId[]): ToolId[] {

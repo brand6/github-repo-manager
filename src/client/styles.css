@@ -1619,6 +1619,214 @@ dd {
   margin-top: 10px;
 }
 
+.project-skills-panel .segmented-tabs {
+  margin: 0;
+}
+
+.project-skill-tab-panel,
+.project-local-skill-tab-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.project-local-skill-list,
+.project-local-skill-group-list {
+  display: grid;
+  gap: 10px;
+}
+
+.project-local-skill-group {
+  display: grid;
+  gap: 8px;
+}
+
+.project-local-skill-group-title {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.project-local-skill-group-heading,
+.project-local-skill-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-local-skill-group-heading h3 {
+  margin: 0;
+}
+
+.project-local-skill-group-actions button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.project-local-skill-row {
+  box-shadow: none;
+}
+
+.project-local-skill-row > summary input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  min-height: auto;
+  accent-color: var(--primary);
+}
+
+.project-local-skill-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.project-local-skill-new-source {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.project-local-skill-row small {
+  display: block;
+  color: var(--text-muted);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.project-local-skill-migration-dialog {
+  width: min(620px, 100%);
+}
+
+.project-local-skill-migration-dialog select,
+.project-local-skill-migration-dialog input {
+  width: 100%;
+}
+
+.project-local-skill-migration-summary {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.project-local-skill-migration-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mcphub-import-panel textarea {
+  min-height: 160px;
+  resize: vertical;
+}
+
+.mcphub-server-list,
+.project-local-mcp-list,
+.project-mcphub-list {
+  display: grid;
+  gap: 10px;
+}
+
+.mcphub-server-card,
+.project-local-mcp-row,
+.project-mcphub-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.mcphub-server-card summary,
+.project-local-mcp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+}
+
+.project-mcphub-row > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.project-mcphub-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-mcphub-row > summary::before {
+  content: "›";
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.project-mcphub-row[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.project-mcphub-body {
+  margin: 0 12px 12px;
+}
+
+.project-mcphub-row .project-mcphub-body p {
+  margin: 0;
+}
+
+.project-local-mcp-row p,
+.project-local-mcp-row small,
+.project-mcphub-row p,
+.project-mcphub-row small {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.project-local-mcp-row small,
+.project-mcphub-row small {
+  display: block;
+  color: var(--text-muted);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.json-preview {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: 10px;
+  font-size: 12px;
+}
+
+.segmented-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.segmented-tabs button {
+  background: var(--surface-muted);
+}
+
+.segmented-tabs button.active {
+  background: var(--primary);
+  color: var(--primary-contrast);
+}
+
 .tool-refresh-list.compact {
   gap: 8px;
 }
@@ -1830,6 +2038,8 @@ dd {
   .skillhub-import-panel,
   .skillhub-import-grid,
   .rule-file-grid,
+  .project-local-skill-row,
+  .project-local-skill-new-source,
   .skill-target-row summary {
     grid-template-columns: 1fr;
   }

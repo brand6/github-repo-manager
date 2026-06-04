@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import type {
   ProjectSkillTargetsState,
   ProjectSkillUpdateResult,
+  ProjectLocalSkill,
+  ProjectLocalSkillMigrationTarget,
+  ProjectLocalSkillsState,
   RuleSyncDirection,
   RuleSyncStatus,
   SkillHubList,
@@ -13,6 +16,9 @@ import type {
 type SkillHubSkill = SkillHubList["skills"][number];
 type SkillHubSource = SkillHubList["sources"][number];
 
+const DIRECT_SKILLS_SOURCE_ID = "skills";
+const NEW_LOCAL_SOURCE_VALUE = "__new-local-source__";
+
 interface SkillHubSourceSummary {
   id: string;
   type: SkillHubSource["type"];
@@ -22,6 +28,19 @@ interface SkillHubSourceSummary {
 interface SkillHubSourceGroup {
   source: SkillHubSourceSummary;
   skills: SkillHubSkill[];
+}
+
+interface MigrationSourceOption {
+  id: string;
+  label: string;
+  path: string | null;
+}
+
+type ProjectSkillsTab = "skillhub" | "local";
+
+interface ProjectLocalSkillMigrationItem {
+  toolId: ToolId;
+  folderName: string;
 }
 
 export function SkillHubPage({
@@ -223,17 +242,83 @@ function skillHubSourceSummary(source: SkillHubSource): SkillHubSourceSummary {
   };
 }
 
-export function ProjectSkillPanel({
-  state,
+export function ProjectSkillsPanel({
+  skillState,
+  localSkillState,
   busy,
   lastResult,
   onClose,
+  onUpdateSkill,
+  onPickDirectory,
+  onMigrateLocalSkills
+}: {
+  skillState: ProjectSkillTargetsState | null;
+  localSkillState: ProjectLocalSkillsState | null;
+  busy: boolean;
+  lastResult: ProjectSkillUpdateResult | null;
+  onClose: () => void;
+  onUpdateSkill: (skillId: string, toolIds: ToolId[]) => void;
+  onPickDirectory: () => Promise<string | null>;
+  onMigrateLocalSkills: (skills: ProjectLocalSkillMigrationItem[], target: ProjectLocalSkillMigrationTarget) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<ProjectSkillsTab>("skillhub");
+
+  return (
+    <aside className="side-panel project-skills-panel" aria-label="项目技能管理">
+      <header>
+        <div>
+          <span className="eyebrow">项目技能</span>
+          <h2>技能</h2>
+        </div>
+        <button className="secondary" type="button" onClick={onClose} disabled={busy}>
+          关闭
+        </button>
+      </header>
+
+      <div className="segmented-tabs project-skill-tabs" role="tablist" aria-label="技能类型">
+        <button
+          className={activeTab === "skillhub" ? "active" : ""}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "skillhub"}
+          onClick={() => setActiveTab("skillhub")}
+        >
+          SkillHub技能
+        </button>
+        <button
+          className={activeTab === "local" ? "active" : ""}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "local"}
+          onClick={() => setActiveTab("local")}
+        >
+          本地技能
+        </button>
+      </div>
+
+      {activeTab === "skillhub" ? (
+        <ProjectSkillTabContent state={skillState} busy={busy} lastResult={lastResult} onUpdateSkill={onUpdateSkill} />
+      ) : (
+        <ProjectLocalSkillTabContent
+          state={localSkillState}
+          busy={busy}
+          onPickDirectory={onPickDirectory}
+          onMigrateLocalSkills={onMigrateLocalSkills}
+        />
+      )}
+    </aside>
+  );
+}
+
+function ProjectSkillTabContent({
+  state,
+  busy,
+  lastResult,
   onUpdateSkill
 }: {
   state: ProjectSkillTargetsState | null;
   busy: boolean;
   lastResult: ProjectSkillUpdateResult | null;
-  onClose: () => void;
   onUpdateSkill: (skillId: string, toolIds: ToolId[]) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -251,17 +336,7 @@ export function ProjectSkillPanel({
   const sourceGroups = useMemo(() => groupSkillHubSkills(filteredSkills), [filteredSkills]);
 
   return (
-    <aside className="side-panel project-skill-panel" aria-label="项目技能管理">
-      <header>
-        <div>
-          <span className="eyebrow">SkillHub</span>
-          <h2>项目技能</h2>
-        </div>
-        <button className="secondary" type="button" onClick={onClose} disabled={busy}>
-          关闭
-        </button>
-      </header>
-
+    <div className="project-skill-tab-panel" role="tabpanel">
       {!state ? (
         <div className="muted">正在读取项目技能...</div>
       ) : (
@@ -339,8 +414,335 @@ export function ProjectSkillPanel({
           </div>
         </>
       )}
-    </aside>
+    </div>
   );
+}
+
+function ProjectLocalSkillTabContent({
+  state,
+  busy,
+  onPickDirectory,
+  onMigrateLocalSkills
+}: {
+  state: ProjectLocalSkillsState | null;
+  busy: boolean;
+  onPickDirectory: () => Promise<string | null>;
+  onMigrateLocalSkills: (skills: ProjectLocalSkillMigrationItem[], target: ProjectLocalSkillMigrationTarget) => void;
+}) {
+  const skillHubSkills = useMemo(() => state?.skills.filter((skill) => skill.type === "skillhub") ?? [], [state]);
+  const localSkills = useMemo(() => state?.skills.filter((skill) => skill.type === "local") ?? [], [state]);
+  const migrationSources = useMemo(() => localSkillMigrationSourceOptions(state?.migrationSources ?? []), [state]);
+  const [migrationMode, setMigrationMode] = useState(false);
+  const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
+  const [migrationDialogOpen, setMigrationDialogOpen] = useState(false);
+  const selectedLocalSkills = useMemo(
+    () => localSkills.filter((skill) => selectedSkillKeys.includes(localSkillKey(skill))),
+    [localSkills, selectedSkillKeys]
+  );
+
+  useEffect(() => {
+    setSelectedSkillKeys((current) =>
+      current.filter((key) => localSkills.some((skill) => skill.migratable && localSkillKey(skill) === key))
+    );
+  }, [localSkills]);
+
+  function cancelMigrationMode() {
+    setMigrationMode(false);
+    setMigrationDialogOpen(false);
+    setSelectedSkillKeys([]);
+  }
+
+  function toggleLocalSkill(skill: ProjectLocalSkill, checked: boolean) {
+    const key = localSkillKey(skill);
+    setSelectedSkillKeys((current) => (checked ? [...new Set([...current, key])] : current.filter((item) => item !== key)));
+  }
+
+  function startMigration(target: ProjectLocalSkillMigrationTarget) {
+    const migrationItems = selectedLocalSkills.map((skill) => ({ toolId: skill.toolId, folderName: skill.folderName }));
+    setMigrationDialogOpen(false);
+    setMigrationMode(false);
+    setSelectedSkillKeys([]);
+    onMigrateLocalSkills(migrationItems, target);
+  }
+
+  return (
+    <div className="project-local-skill-tab-panel" role="tabpanel">
+      {migrationDialogOpen ? (
+        <ProjectLocalSkillMigrationDialog
+          skills={selectedLocalSkills}
+          migrationSources={migrationSources}
+          busy={busy}
+          onPickDirectory={onPickDirectory}
+          onCancel={() => setMigrationDialogOpen(false)}
+          onMigrate={startMigration}
+        />
+      ) : null}
+
+      {!state ? (
+        <div className="muted">正在读取本地技能...</div>
+      ) : state.skills.length === 0 ? (
+        <div className="empty-state compact">没有发现项目技能</div>
+      ) : (
+        <div className="project-local-skill-list">
+          <ProjectLocalSkillGroup
+            title="SkillHub"
+            skills={skillHubSkills}
+            busy={busy}
+            selectedSkillKeys={selectedSkillKeys}
+            migrationMode={false}
+            onToggleSkill={toggleLocalSkill}
+          />
+          <ProjectLocalSkillGroup
+            title="Local"
+            skills={localSkills}
+            busy={busy}
+            selectedSkillKeys={selectedSkillKeys}
+            migrationMode={migrationMode}
+            onToggleSkill={toggleLocalSkill}
+            headerActions={
+              <div className="project-local-skill-group-actions">
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={busy || (migrationMode && selectedLocalSkills.length === 0)}
+                  onClick={() => {
+                    if (!migrationMode) {
+                      setMigrationMode(true);
+                      return;
+                    }
+                    setMigrationDialogOpen(true);
+                  }}
+                >
+                  {migrationMode ? "开始迁移" : "迁移到SkillHub"}
+                </button>
+                {migrationMode ? (
+                  <button className="secondary" type="button" disabled={busy} onClick={cancelMigrationMode}>
+                    取消迁移
+                  </button>
+                ) : null}
+              </div>
+            }
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectLocalSkillGroup({
+  title,
+  skills,
+  busy,
+  migrationMode,
+  selectedSkillKeys,
+  headerActions,
+  onToggleSkill
+}: {
+  title: string;
+  skills: ProjectLocalSkill[];
+  busy: boolean;
+  migrationMode: boolean;
+  selectedSkillKeys: string[];
+  headerActions?: React.ReactNode;
+  onToggleSkill: (skill: ProjectLocalSkill, checked: boolean) => void;
+}) {
+  return (
+    <section className="project-local-skill-group" aria-label={`${title} 技能`}>
+      <div className="section-title compact project-local-skill-group-title">
+        <div className="project-local-skill-group-heading">
+          <h3>{title}</h3>
+          <span className="metric-pill strong">{skills.length} 个技能</span>
+        </div>
+        {headerActions}
+      </div>
+      {skills.length === 0 ? (
+        <div className="empty-state compact">没有{title}技能</div>
+      ) : (
+        <div className="project-local-skill-group-list">
+          {skills.map((skill) => (
+            <ProjectLocalSkillRow
+              key={`${skill.type}:${skill.toolId}:${skill.folderName}`}
+              skill={skill}
+              busy={busy}
+              selected={selectedSkillKeys.includes(localSkillKey(skill))}
+              migrationMode={migrationMode}
+              onToggleSkill={onToggleSkill}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProjectLocalSkillRow({
+  skill,
+  busy,
+  selected,
+  migrationMode,
+  onToggleSkill
+}: {
+  skill: ProjectLocalSkill;
+  busy: boolean;
+  selected: boolean;
+  migrationMode: boolean;
+  onToggleSkill: (skill: ProjectLocalSkill, checked: boolean) => void;
+}) {
+  return (
+    <details className="project-local-skill-row skillhub-skill-row">
+      <summary>
+        {migrationMode && skill.type === "local" ? (
+          <input
+            aria-label={`选择 ${skill.folderName}`}
+            type="checkbox"
+            checked={selected}
+            disabled={busy || !skill.migratable}
+            title={skill.reason ?? undefined}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => onToggleSkill(skill, event.target.checked)}
+          />
+        ) : null}
+        <span className="skillhub-skill-title">{skill.folderName}</span>
+        {skill.skillName && skill.skillName !== skill.folderName ? <small>{skill.skillName}</small> : null}
+      </summary>
+      <div className="skillhub-skill-body">
+        <p>{skill.description ?? skill.skillName ?? "无描述"}</p>
+        <div className="project-local-skill-title">
+          <span className="metric-pill">{skill.toolId}</span>
+          <span className="metric-pill">{skill.type === "skillhub" ? "SkillHub" : "Local"}</span>
+        </div>
+        <small>{skill.skillHubSkill?.libraryRelativePath ?? skill.skillPath}</small>
+        {!skill.migratable && skill.reason ? <div className="inline-warning">{skill.reason}</div> : null}
+      </div>
+    </details>
+  );
+}
+
+function ProjectLocalSkillMigrationDialog({
+  skills,
+  migrationSources,
+  busy,
+  onPickDirectory,
+  onCancel,
+  onMigrate
+}: {
+  skills: ProjectLocalSkill[];
+  migrationSources: MigrationSourceOption[];
+  busy: boolean;
+  onPickDirectory: () => Promise<string | null>;
+  onCancel: () => void;
+  onMigrate: (target: ProjectLocalSkillMigrationTarget) => void;
+}) {
+  const defaultSourceId = migrationSources[0]?.id ?? DIRECT_SKILLS_SOURCE_ID;
+  const [targetValue, setTargetValue] = useState(defaultSourceId);
+  const [newSourcePath, setNewSourcePath] = useState("");
+
+  useEffect(() => {
+    if (targetValue === NEW_LOCAL_SOURCE_VALUE) return;
+    if (!migrationSources.some((source) => source.id === targetValue)) setTargetValue(defaultSourceId);
+  }, [defaultSourceId, migrationSources, targetValue]);
+
+  async function pickNewSourcePath() {
+    const selected = await onPickDirectory();
+    if (selected) setNewSourcePath(selected);
+  }
+
+  const selectedSource = migrationSources.find((source) => source.id === targetValue) ?? null;
+  const newSourceSelected = targetValue === NEW_LOCAL_SOURCE_VALUE;
+  const target: ProjectLocalSkillMigrationTarget = newSourceSelected
+    ? { type: "new-source", path: newSourcePath.trim() }
+    : { type: "existing-source", sourceId: targetValue || DIRECT_SKILLS_SOURCE_ID };
+  const startDisabled = busy || skills.length === 0 || (newSourceSelected && !newSourcePath.trim());
+
+  return (
+    <div className="settings-backdrop" role="presentation">
+      <section
+        className="settings-dialog project-local-skill-migration-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="project-local-skill-migration-title"
+      >
+        <header>
+          <div>
+            <span className="eyebrow">SkillHub</span>
+            <h2 id="project-local-skill-migration-title">迁移技能</h2>
+          </div>
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+        </header>
+
+        <div className="project-local-skill-migration-summary">
+          <strong>{skills.length} 个本地技能</strong>
+          <div className="project-local-skill-migration-list">
+            {skills.map((skill) => (
+              <span className="metric-pill" key={localSkillKey(skill)}>
+                {skill.folderName}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <label className="field wide">
+          迁移目录
+          <select value={targetValue} onChange={(event) => setTargetValue(event.target.value)} disabled={busy}>
+            {migrationSources.map((source) => (
+              <option key={source.id} value={source.id}>
+                {source.label}
+              </option>
+            ))}
+            <option value={NEW_LOCAL_SOURCE_VALUE}>新建 source 目录</option>
+          </select>
+        </label>
+
+        {newSourceSelected ? (
+          <div className="project-local-skill-new-source">
+            <input
+              aria-label="新 source 目录"
+              value={newSourcePath}
+              onChange={(event) => setNewSourcePath(event.target.value)}
+              placeholder="选择或输入新 source 目录"
+              disabled={busy}
+            />
+            <button className="secondary" type="button" onClick={() => void pickNewSourcePath()} disabled={busy}>
+              选择目录
+            </button>
+          </div>
+        ) : selectedSource?.path ? (
+          <small className="path-line">{selectedSource.path}</small>
+        ) : null}
+
+        <div className="settings-actions">
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>
+            取消迁移
+          </button>
+          <button className="primary" type="button" disabled={startDisabled} onClick={() => onMigrate(target)}>
+            开始迁移
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function localSkillKey(skill: Pick<ProjectLocalSkill, "toolId" | "folderName">): string {
+  return `${skill.toolId}:${skill.folderName}`;
+}
+
+function localSkillMigrationSourceOptions(sources: SkillHubSource[]): MigrationSourceOption[] {
+  const options: MigrationSourceOption[] = sources
+    .filter((source) => source.type === "local")
+    .map((source) => ({
+      id: source.id,
+      label: source.label || source.id,
+      path: source.resolvedPath ?? source.input ?? null
+    }));
+
+  if (!options.some((source) => source.id === DIRECT_SKILLS_SOURCE_ID)) {
+    options.unshift({ id: DIRECT_SKILLS_SOURCE_ID, label: DIRECT_SKILLS_SOURCE_ID, path: null });
+  }
+
+  return options;
 }
 
 export function RuleSyncDialog({

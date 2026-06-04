@@ -1,6 +1,18 @@
 import fs from "node:fs";
 import express, { type Express, type Request, type Response } from "express";
-import { isTerminalMode, type AppConfig, type RefreshMode, type RefreshResult, type RuleSyncDirection, type SkillHubOpenTarget, type ToolId } from "../../shared/types.js";
+import {
+  isTerminalMode,
+  type AppConfig,
+  type McpHubTargetToolId,
+  type ProjectLocalMcpMigrationMode,
+  type ProjectLocalSkillMigrationMode,
+  type ProjectLocalSkillMigrationTarget,
+  type RefreshMode,
+  type RefreshResult,
+  type RuleSyncDirection,
+  type SkillHubOpenTarget,
+  type ToolId
+} from "../../shared/types.js";
 import { adapterFor, listToolStatuses, sessionSourcesForAdapter, toolAdapters } from "../tools/adapters.js";
 import { refreshAllSessions, refreshProjectSessions, refreshSessionFiles } from "../scanning/sessionScanner.js";
 import { deleteSession as deleteIndexedSession } from "../scanning/sessionDeletion.js";
@@ -9,8 +21,8 @@ import { launchInTerminal, terminalWindowTarget } from "../launch/terminal.js";
 import { confirmRelocation, previewRelocation, relocateManagedProject } from "../relocation/relocation.js";
 import { confirmProjectRepair, listProjectRepairCandidates } from "../repair/projectRepair.js";
 import { repairQwenSourcePathForSession } from "../repair/qwenSourceRepair.js";
-import { createDirectory, listScanDrives, pickDirectory } from "../core/localFilesystem.js";
-import { isStrictChildPath } from "../core/pathUtils.js";
+import { createDirectory, listScanDrives } from "../core/localFilesystem.js";
+import { displayPath, isPathInsideOrEqual, isStrictChildPath, normalizeFsPath } from "../core/pathUtils.js";
 import {
   applyGitHubSourceUpdate,
   checkGitHubUpdates,
@@ -18,9 +30,20 @@ import {
   importGitHubSource,
   importLocalSkills,
   listSkillHub,
+  listProjectLocalSkillsState,
+  migrateProjectLocalSkill,
   openSkillHubSkill,
   previewDeleteSkillHubSkill
 } from "../skillhub/skillhub.js";
+import {
+  applyProjectMcpServer,
+  deleteMcpHubServer,
+  disableProjectMcpServer,
+  importMcpHubJson,
+  listMcpHub,
+  listProjectMcpState,
+  migrateProjectLocalMcp
+} from "../mcphub/mcphub.js";
 import { applyRuleSync, commitRuleSyncTarget, getRuleSyncStatus } from "../skillhub/ruleSync.js";
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../skillhub/projectSkills.js";
 import type { AppContext } from "../appContext.js";
@@ -56,9 +79,12 @@ export function installApi(app: Express, context: AppContext): void {
     response.json(listScanDrives());
   });
 
-  app.post("/api/local-filesystem/pick-directory", (_request, response) => {
-    response.json(pickDirectory());
-  });
+  app.post(
+    "/api/local-filesystem/pick-directory",
+    asyncHandler(async (_request, response) => {
+      response.json(await context.pickDirectory());
+    })
+  );
 
   app.use("/api", (_request, response, next) => {
     if (!context.bootstrapState().initialized) {
@@ -199,6 +225,27 @@ export function installApi(app: Express, context: AppContext): void {
     }
   });
 
+  app.get("/api/mcphub", (_request, response) => {
+    response.json(listMcpHub(context.database()));
+  });
+
+  app.post("/api/mcphub/import", (request, response) => {
+    const input = stringBody(request, "input");
+    if (!input) {
+      response.status(400).json({ error: "input is required" });
+      return;
+    }
+    response.json(importMcpHubJson(context.database(), input));
+  });
+
+  app.delete("/api/mcphub/servers/:serverId", (request, response) => {
+    try {
+      response.json(deleteMcpHubServer(context.database(), request.params.serverId));
+    } catch (error) {
+      response.status(400).json({ error: "mcphub-delete-failed", reason: error instanceof Error ? error.message : "mcphub-delete-failed" });
+    }
+  });
+
   app.get("/api/projects", (_request, response) => {
     response.json(context.database().listProjects());
   });
@@ -271,18 +318,98 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.get("/api/projects/:id/skill-targets", (request, response) => {
-    const project = context.database().getProject(request.params.id);
+    const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) {
-      response.status(404).json({ error: "project-not-found" });
       return;
     }
     response.json(listProjectSkillTargetsState(context.database(), project));
   });
 
-  app.put("/api/projects/:id/skill-targets/:skillId", (request, response) => {
-    const project = context.database().getProject(request.params.id);
+  app.get("/api/projects/:id/local-skills", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) {
-      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    response.json(listProjectLocalSkillsState(context.database(), project));
+  });
+
+  app.post("/api/projects/:id/local-skills/migrate", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = toolIdBody(request);
+    const folderName = stringBody(request, "folderName");
+    const mode = localSkillMigrationModeBody(request);
+    const target = localSkillMigrationTargetBody(request);
+    if (!dataDir) return;
+    if (!project) {
+      return;
+    }
+    if (!toolId || !folderName || mode === undefined || target === undefined) {
+      response.status(400).json({ error: "toolId, folderName, valid mode, and valid target are required" });
+      return;
+    }
+    try {
+      response.json(migrateProjectLocalSkill(context.database(), context.config(), dataDir, project, toolId, folderName, mode, target));
+    } catch (error) {
+      response.status(400).json({ error: "project-local-skill-migration-failed", reason: error instanceof Error ? error.message : "project-local-skill-migration-failed" });
+    }
+  });
+
+  app.get("/api/projects/:id/mcp", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    response.json(listProjectMcpState(context.database(), project));
+  });
+
+  app.put("/api/projects/:id/mcp-bindings/:serverId/:toolId", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = mcpHubTargetToolIdParam(request);
+    if (!project) return;
+    if (!toolId) {
+      response.status(400).json({ error: "toolId must be claude, codex, or opencode" });
+      return;
+    }
+    try {
+      response.json(applyProjectMcpServer(context.database(), project, toolId, request.params.serverId));
+    } catch (error) {
+      response.status(400).json({ error: "project-mcp-apply-failed", reason: error instanceof Error ? error.message : "project-mcp-apply-failed" });
+    }
+  });
+
+  app.delete("/api/projects/:id/mcp-bindings/:serverId/:toolId", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = mcpHubTargetToolIdParam(request);
+    if (!project) return;
+    if (!toolId) {
+      response.status(400).json({ error: "toolId must be claude, codex, or opencode" });
+      return;
+    }
+    try {
+      response.json(disableProjectMcpServer(context.database(), project, toolId, request.params.serverId));
+    } catch (error) {
+      response.status(400).json({ error: "project-mcp-disable-failed", reason: error instanceof Error ? error.message : "project-mcp-disable-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/local-mcp/migrate", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const serverId = stringBody(request, "serverId");
+    const mode = localMcpMigrationModeBody(request);
+    if (!project) return;
+    if (!serverId || mode === undefined) {
+      response.status(400).json({ error: "serverId and valid mode are required" });
+      return;
+    }
+    try {
+      response.json(migrateProjectLocalMcp(context.database(), project, serverId, mode));
+    } catch (error) {
+      response.status(400).json({ error: "project-local-mcp-migration-failed", reason: error instanceof Error ? error.message : "project-local-mcp-migration-failed" });
+    }
+  });
+
+  app.put("/api/projects/:id/skill-targets/:skillId", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) {
       return;
     }
     const toolIds = toolIdsBody(request);
@@ -621,6 +748,87 @@ function toolIdsBody(request: Request): ToolId[] | undefined | null {
     if (!toolIds.includes(item)) toolIds.push(item);
   }
   return toolIds;
+}
+
+function toolIdBody(request: Request): ToolId | null {
+  return isToolId(request.body?.toolId) ? request.body.toolId : null;
+}
+
+function mcpHubTargetToolIdParam(request: Request): McpHubTargetToolId | null {
+  const value = request.params.toolId;
+  return value === "claude" || value === "codex" || value === "opencode" ? value : null;
+}
+
+function localMcpMigrationModeBody(request: Request): ProjectLocalMcpMigrationMode | null | undefined {
+  if (request.body?.mode === undefined || request.body?.mode === null) return null;
+  if (request.body.mode === "link-existing" || request.body.mode === "overwrite-mcphub") return request.body.mode;
+  return undefined;
+}
+
+function localSkillMigrationModeBody(request: Request): ProjectLocalSkillMigrationMode | null | undefined {
+  if (request.body?.mode === undefined || request.body?.mode === null) return null;
+  if (request.body.mode === "overwrite-skillhub" || request.body.mode === "link-existing") return request.body.mode;
+  return undefined;
+}
+
+function localSkillMigrationTargetBody(request: Request): ProjectLocalSkillMigrationTarget | null | undefined {
+  const target = request.body?.target;
+  if (target === undefined || target === null) return null;
+  if (typeof target !== "object" || Array.isArray(target)) return undefined;
+
+  if (target.type === "existing-source") {
+    const sourceId = typeof target.sourceId === "string" ? target.sourceId.trim() : "";
+    return sourceId ? { type: "existing-source", sourceId } : undefined;
+  }
+
+  if (target.type === "new-source") {
+    const targetPath = typeof target.path === "string" ? target.path.trim() : "";
+    const label = typeof target.label === "string" && target.label.trim() ? target.label.trim() : null;
+    return targetPath ? { type: "new-source", path: targetPath, label } : undefined;
+  }
+
+  return undefined;
+}
+
+function projectSkillScopeFromRequest(context: AppContext, request: Request, response: Response) {
+  const projectId = request.params.id;
+  if (!projectId || Array.isArray(projectId)) {
+    response.status(404).json({ error: "project-not-found" });
+    return null;
+  }
+  const project = context.database().getProject(projectId);
+  if (!project) {
+    response.status(404).json({ error: "project-not-found" });
+    return null;
+  }
+
+  const targetRootPath = targetRootPathFromRequest(request);
+  if (!targetRootPath) return project;
+
+  const normalizedTargetRoot = normalizeFsPath(targetRootPath);
+  if (!isPathInsideOrEqual(project.normalizedRootPath, normalizedTargetRoot)) {
+    response.status(400).json({ error: "targetRootPath-outside-project" });
+    return null;
+  }
+
+  if (normalizedTargetRoot !== project.normalizedRootPath && !project.includeSubdirectories) {
+    response.status(400).json({ error: "targetRootPath-requires-subdirectories" });
+    return null;
+  }
+
+  return {
+    ...project,
+    rootPath: displayPath(targetRootPath),
+    normalizedRootPath: normalizedTargetRoot,
+    includeSubdirectories: false
+  };
+}
+
+function targetRootPathFromRequest(request: Request): string | null {
+  const bodyValue = typeof request.body?.targetRootPath === "string" ? request.body.targetRootPath : null;
+  const queryValue = typeof request.query.targetRootPath === "string" ? request.query.targetRootPath : null;
+  const value = (bodyValue ?? queryValue)?.trim();
+  return value ? value : null;
 }
 
 function refreshModeBody(request: Request): RefreshMode | null {

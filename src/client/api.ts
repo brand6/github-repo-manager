@@ -5,9 +5,22 @@ import type {
   DirectoryCreateResponse,
   DirectoryPickResponse,
   LaunchResponse,
+  McpHubCleanupReport,
+  McpHubImportResult,
+  McpHubList,
+  McpHubTargetToolId,
   ParserWarning,
   Project,
   ProjectDetail,
+  ProjectLocalMcpMigrationMode,
+  ProjectLocalMcpMigrationResult,
+  ProjectLocalSkillMigrationMode,
+  ProjectLocalSkillMigrationTarget,
+  ProjectLocalSkillMigrationResult,
+  ProjectLocalSkillsState,
+  ProjectMcpApplyResult,
+  ProjectMcpDisableResult,
+  ProjectMcpState,
   ProjectRepairCandidate,
   ProjectSkillTargetsState,
   ProjectSkillUpdateResult,
@@ -105,6 +118,9 @@ export const client = {
   deleteSkillHubSkill: (skillId: string) => apiDelete<SkillHubDeletePreview>(`/api/skillhub/skills/${encodeURIComponent(skillId)}`),
   openSkillHubSkill: (skillId: string, target: SkillHubOpenTarget) =>
     apiPost<LocalOpenResponse>(`/api/skillhub/skills/${encodeURIComponent(skillId)}/open`, { target }),
+  mcphub: () => apiGet<McpHubList>("/api/mcphub"),
+  importMcpHubJson: (input: string) => apiPost<McpHubImportResult>("/api/mcphub/import", { input }),
+  deleteMcpHubServer: (serverId: string) => apiDelete<McpHubCleanupReport>(`/api/mcphub/servers/${encodeURIComponent(serverId)}`),
   projects: () => apiGet<Project[]>("/api/projects"),
   drives: () => apiGet<ScanDrive[]>("/api/local-filesystem/drives"),
   pickDirectory: () => apiPost<DirectoryPickResponse>("/api/local-filesystem/pick-directory"),
@@ -123,9 +139,47 @@ export const client = {
   refreshProject: (id: string) => apiPost<RefreshResult>(`/api/projects/${id}/refresh`),
   projectToolTargets: (id: string) => apiGet<ProjectToolTarget[]>(`/api/projects/${id}/tool-targets`),
   updateProjectToolTargets: (id: string, toolIds: string[]) => apiPatch<ProjectToolTarget[]>(`/api/projects/${id}/tool-targets`, { toolIds }),
-  projectSkillTargets: (id: string) => apiGet<ProjectSkillTargetsState>(`/api/projects/${id}/skill-targets`),
-  updateProjectSkillTargets: (id: string, skillId: string, toolIds: string[], replaceConflicts = false) =>
-    apiPut<ProjectSkillUpdateResult>(`/api/projects/${id}/skill-targets/${encodeURIComponent(skillId)}`, { toolIds, replaceConflicts }),
+  projectSkillTargets: (id: string, targetRootPath?: string) =>
+    apiGet<ProjectSkillTargetsState>(`/api/projects/${id}/skill-targets${projectTargetQuery(targetRootPath)}`),
+  updateProjectSkillTargets: (id: string, skillId: string, toolIds: string[], replaceConflicts = false, targetRootPath?: string) =>
+    apiPut<ProjectSkillUpdateResult>(`/api/projects/${id}/skill-targets/${encodeURIComponent(skillId)}`, {
+      toolIds,
+      replaceConflicts,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  projectLocalSkills: (id: string, targetRootPath?: string) =>
+    apiGet<ProjectLocalSkillsState>(`/api/projects/${id}/local-skills${projectTargetQuery(targetRootPath)}`),
+  migrateProjectLocalSkill: (
+    id: string,
+    toolId: string,
+    folderName: string,
+    mode: ProjectLocalSkillMigrationMode | null = null,
+    targetRootPath?: string,
+    target?: ProjectLocalSkillMigrationTarget | null
+  ) =>
+    apiPost<ProjectLocalSkillMigrationResult>(`/api/projects/${id}/local-skills/migrate`, {
+      toolId,
+      folderName,
+      mode,
+      ...(targetRootPath ? { targetRootPath } : {}),
+      ...(target ? { target } : {})
+    }),
+  projectMcp: (id: string, targetRootPath?: string) =>
+    apiGet<ProjectMcpState>(`/api/projects/${id}/mcp${projectTargetQuery(targetRootPath)}`),
+  applyProjectMcp: (id: string, serverId: string, toolId: McpHubTargetToolId, targetRootPath?: string) =>
+    apiPut<ProjectMcpApplyResult>(`/api/projects/${id}/mcp-bindings/${encodeURIComponent(serverId)}/${encodeURIComponent(toolId)}`, {
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  disableProjectMcp: (id: string, serverId: string, toolId: McpHubTargetToolId, targetRootPath?: string) =>
+    apiDelete<ProjectMcpDisableResult>(
+      `/api/projects/${id}/mcp-bindings/${encodeURIComponent(serverId)}/${encodeURIComponent(toolId)}${projectTargetQuery(targetRootPath)}`
+    ),
+  migrateProjectLocalMcp: (id: string, serverId: string, mode: ProjectLocalMcpMigrationMode | null = null, targetRootPath?: string) =>
+    apiPost<ProjectLocalMcpMigrationResult>(`/api/projects/${id}/local-mcp/migrate`, {
+      serverId,
+      mode,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
   ruleSyncStatus: (id: string) => apiGet<RuleSyncStatus>(`/api/projects/${id}/rule-sync/status`),
   applyRuleSync: (id: string, direction: RuleSyncDirection, options: { confirmGitInit?: boolean; confirmDirectOverwrite?: boolean } = {}) =>
     apiPost<RuleSyncResult>(`/api/projects/${id}/rule-sync/apply`, { direction, ...options }),
@@ -152,3 +206,7 @@ export const client = {
   warnings: (projectId?: string) =>
     apiGet<ParserWarning[]>(projectId ? `/api/parser-warnings?projectId=${encodeURIComponent(projectId)}` : "/api/parser-warnings")
 };
+
+function projectTargetQuery(targetRootPath?: string): string {
+  return targetRootPath ? `?targetRootPath=${encodeURIComponent(targetRootPath)}` : "";
+}

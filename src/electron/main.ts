@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { startHttpServer, type RunningHttpServer } from "../server/runtime.js";
+import type { DirectoryPickResponse } from "../shared/types.js";
 
 let runtime: RunningHttpServer | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -9,7 +10,7 @@ app.setName("GitHub Repo Manager");
 
 app.whenReady()
   .then(async () => {
-    runtime = await startHttpServer({ port: 0, dev: false, dataDir: dataDirArg() });
+    runtime = await startHttpServer({ port: 0, dev: false, dataDir: dataDirArg(), pickDirectory: pickDirectoryInElectron });
     mainWindow = createMainWindow(runtime.url);
   })
   .catch((error) => {
@@ -98,4 +99,14 @@ function openExternal(targetUrl: string): void {
   if (targetUrl.startsWith("http://") || targetUrl.startsWith("https://")) {
     shell.openExternal(targetUrl).catch(() => undefined);
   }
+}
+
+async function pickDirectoryInElectron(): Promise<DirectoryPickResponse> {
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, { title: "选择文件夹", properties: ["openDirectory"] })
+    : await dialog.showOpenDialog({ title: "选择文件夹", properties: ["openDirectory"] });
+  if (result.canceled || result.filePaths.length === 0) {
+    return { path: null, cancelled: true };
+  }
+  return { path: result.filePaths[0] ?? null, cancelled: false };
 }

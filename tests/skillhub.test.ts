@@ -5,9 +5,18 @@ import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultAppConfig } from "../src/server/core/bootstrap.js";
 import { AppDatabase } from "../src/server/storage/database.js";
-import { importGitHubSource, importLocalSkills, checkGitHubUpdates, applyGitHubSourceUpdate, deleteSkillHubSkill, listSkillHub } from "../src/server/skillhub/skillhub.js";
+import {
+  importGitHubSource,
+  importLocalSkills,
+  checkGitHubUpdates,
+  applyGitHubSourceUpdate,
+  deleteSkillHubSkill,
+  listSkillHub,
+  listProjectLocalSkillsState,
+  migrateProjectLocalSkill
+} from "../src/server/skillhub/skillhub.js";
 import { applyRuleSync, commitRuleSyncTarget, getRuleSyncStatus } from "../src/server/skillhub/ruleSync.js";
-import { listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../src/server/skillhub/projectSkills.js";
+import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../src/server/skillhub/projectSkills.js";
 import type { AppConfig, Project } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 
@@ -137,6 +146,203 @@ describe("SkillHub", () => {
     expect(deleted.affectedTargets).toHaveLength(1);
     expect(fs.existsSync(skillB.libraryPath)).toBe(false);
     expect(db.listProjectSkillTargetsForSkill(skillB.id)).toEqual([]);
+    db.close();
+  });
+
+  it("does not infer Copilot from generic GitHub or VS Code project folders", () => {
+    directory = testDir("skillhub-project-tool-targets-generic-github-vscode");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(path.join(projectRoot, ".github", "workflows"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".vscode"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".github", "workflows", "ci.yml"), "name: ci\n", "utf8");
+    fs.writeFileSync(path.join(projectRoot, ".vscode", "settings.json"), "{}\n", "utf8");
+    const project = db.addProject(projectRoot).project;
+    db.upsertProjectToolTarget(project.id, "copilot", true, true);
+
+    const copilot = listProjectToolTargets(db, project).find((target) => target.toolId === "copilot");
+
+    db.close();
+    expect(copilot).toMatchObject({ enabled: false, inferred: true });
+  });
+
+  it("infers Copilot from explicit copilot instructions", () => {
+    directory = testDir("skillhub-project-tool-targets-copilot-instructions");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(path.join(projectRoot, ".github"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".github", "copilot-instructions.md"), "Use project conventions.\n", "utf8");
+    const project = db.addProject(projectRoot).project;
+
+    const copilot = listProjectToolTargets(db, project).find((target) => target.toolId === "copilot");
+
+    db.close();
+    expect(copilot).toMatchObject({ enabled: true, inferred: true });
+  });
+
+  it("keeps project skill links scoped to root and child directories under one managed project", () => {
+    directory = testDir("skillhub-project-child-links");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    const childRoot = path.join(projectRoot, "packages", "app");
+    fs.mkdirSync(childRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot, true).project;
+    const childScope: Project = {
+      ...project,
+      rootPath: childRoot,
+      normalizedRootPath: childRoot.toLowerCase(),
+      includeSubdirectories: false
+    };
+    const source = path.join(directory, "source");
+    writeSkill(path.join(source, "skills", "review"), "review", "Review skill");
+    const skill = importLocalSkills(db, config, directory, source).imported[0];
+
+    updateProjectToolTargets(db, project, ["codex"]);
+    expect(setProjectSkillTargets(db, project, skill.id, ["codex"]).failures).toEqual([]);
+    expect(setProjectSkillTargets(db, childScope, skill.id, ["codex"]).failures).toEqual([]);
+
+    const rootLink = path.join(projectRoot, ".codex", "skills", "review");
+    const childLink = path.join(childRoot, ".codex", "skills", "review");
+    expect(fs.existsSync(rootLink)).toBe(true);
+    expect(fs.existsSync(childLink)).toBe(true);
+    expect(db.listProjectSkillTargetsForSkill(skill.id)).toHaveLength(2);
+    expect(listProjectSkillTargetsState(db, project).skillTargets.map((target) => target.linkPath)).toEqual([rootLink]);
+    expect(listProjectSkillTargetsState(db, childScope).skillTargets.map((target) => target.linkPath)).toEqual([childLink]);
+
+    const removed = setProjectSkillTargets(db, childScope, skill.id, []);
+    expect(removed.removed.map((target) => target.linkPath)).toEqual([childLink]);
+    expect(fs.existsSync(rootLink)).toBe(true);
+    expect(fs.existsSync(childLink)).toBe(false);
+    expect(db.listProjectSkillTargetsForSkill(skill.id)).toHaveLength(1);
+    db.close();
+  });
+
+  it("lists project SkillHub and Local skills and migrates a local skill into SkillHub", () => {
+    directory = testDir("skillhub-project-local-migrate");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    const localSkillPath = path.join(projectRoot, ".codex", "skills", "review");
+    writeSkill(localSkillPath, "review", "Local review");
+
+    const before = listProjectLocalSkillsState(db, project);
+    expect(before.skills).toMatchObject([{ type: "local", toolId: "codex", folderName: "review", migratable: true }]);
+
+    const result = migrateProjectLocalSkill(db, config, directory, project, "codex", "review");
+    const after = listProjectLocalSkillsState(db, project);
+
+    expect(result).toMatchObject({ action: "migrated", requiresConfirmation: false, skill: { folderName: "review" } });
+    expect(fs.lstatSync(localSkillPath).isSymbolicLink()).toBe(true);
+    expect(after.skills).toMatchObject([{ type: "skillhub", toolId: "codex", folderName: "review" }]);
+    expect(db.listProjectSkillTargetsForSkill(result.skill?.id ?? "")).toHaveLength(1);
+    expect(fs.existsSync(path.join(config.skillhub.rootDir, "library", "skills", "review", "SKILL.md"))).toBe(true);
+    db.close();
+  });
+
+  it("migrates a project local skill into a selected existing local source", () => {
+    directory = testDir("skillhub-project-local-migrate-existing-source");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    const sourceRoot = path.join(directory, "source-a");
+    writeSkill(path.join(sourceRoot, "skills", "review"), "review", "Source review");
+    const source = importLocalSkills(db, config, directory, sourceRoot).source;
+    const localSkillPath = path.join(projectRoot, ".codex", "skills", "triage");
+    writeSkill(localSkillPath, "triage", "Local triage");
+
+    const result = migrateProjectLocalSkill(db, config, directory, project, "codex", "triage", null, { type: "existing-source", sourceId: source.id });
+
+    expect(result).toMatchObject({
+      action: "migrated",
+      requiresConfirmation: false,
+      skill: { folderName: "triage", sourceId: source.id, libraryRelativePath: "source-a/skills/triage" }
+    });
+    expect(fs.existsSync(path.join(sourceRoot, "skills", "triage", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(config.skillhub.rootDir, "library", "source-a", "skills", "triage", "SKILL.md"))).toBe(true);
+    expect(fs.lstatSync(localSkillPath).isSymbolicLink()).toBe(true);
+    db.close();
+  });
+
+  it("migrates a project local skill into a new local source even when another source has the same folder name", () => {
+    directory = testDir("skillhub-project-local-migrate-new-source");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    const sourceRoot = path.join(directory, "source-a");
+    writeSkill(path.join(sourceRoot, "skills", "review"), "review", "Existing review");
+    importLocalSkills(db, config, directory, sourceRoot);
+    const localSkillPath = path.join(projectRoot, ".codex", "skills", "review");
+    writeSkill(localSkillPath, "review", "Local review");
+    const targetSourceRoot = path.join(directory, "team-source");
+
+    const result = migrateProjectLocalSkill(db, config, directory, project, "codex", "review", null, { type: "new-source", path: targetSourceRoot });
+
+    expect(result).toMatchObject({
+      action: "migrated",
+      requiresConfirmation: false,
+      skill: { folderName: "review", libraryRelativePath: "team-source/skills/review" }
+    });
+    expect(db.listSkillHubSkills().filter((skill) => skill.folderName === "review")).toHaveLength(2);
+    expect(fs.existsSync(path.join(targetSourceRoot, "skills", "review", "SKILL.md"))).toBe(true);
+    expect(fs.lstatSync(localSkillPath).isSymbolicLink()).toBe(true);
+    db.close();
+  });
+
+  it("previews same-name local skill conflicts and can replace local content with an existing SkillHub link", () => {
+    directory = testDir("skillhub-project-local-link-existing");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    const source = path.join(directory, "source");
+    writeSkill(path.join(source, "skills", "review"), "review", "SkillHub review");
+    const skill = importLocalSkills(db, config, directory, source).imported[0];
+    const localSkillPath = path.join(projectRoot, ".codex", "skills", "review");
+    writeSkill(localSkillPath, "review", "Local review");
+
+    const preview = migrateProjectLocalSkill(db, config, directory, project, "codex", "review");
+    const linked = migrateProjectLocalSkill(db, config, directory, project, "codex", "review", "link-existing");
+
+    expect(preview).toMatchObject({ action: "needs-confirmation", requiresConfirmation: true });
+    expect(preview.conflictSkills.map((conflict) => conflict.id)).toEqual([skill.id]);
+    expect(linked).toMatchObject({ action: "linked-existing", skill: { id: skill.id } });
+    expect(fs.lstatSync(localSkillPath).isSymbolicLink()).toBe(true);
+    expect(db.getSkillHubSkill(skill.id)?.description).toBe("SkillHub review");
+    db.close();
+  });
+
+  it("can overwrite a same-name SkillHub skill from a project local skill before linking it", () => {
+    directory = testDir("skillhub-project-local-overwrite");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    const source = path.join(directory, "source");
+    writeSkill(path.join(source, "skills", "review"), "review", "Old SkillHub review");
+    const skill = importLocalSkills(db, config, directory, source).imported[0];
+    const localSkillPath = path.join(projectRoot, ".codex", "skills", "review");
+    writeSkill(localSkillPath, "review", "New local review");
+
+    const overwritten = migrateProjectLocalSkill(db, config, directory, project, "codex", "review", "overwrite-skillhub");
+
+    expect(overwritten).toMatchObject({ action: "overwrote-skillhub", skill: { id: skill.id, description: "New local review" } });
+    expect(fs.readFileSync(path.join(skill.libraryPath, "SKILL.md"), "utf8")).toContain("New local review");
+    expect(fs.lstatSync(localSkillPath).isSymbolicLink()).toBe(true);
     db.close();
   });
 

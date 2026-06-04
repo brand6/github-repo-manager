@@ -1,6 +1,7 @@
 import type http from "node:http";
 import { AppContext } from "./appContext.js";
 import { createHttpApp } from "./http/app.js";
+import type { DirectoryPickResponse } from "../shared/types.js";
 
 export interface HttpServerOptions {
   port: number;
@@ -8,6 +9,7 @@ export interface HttpServerOptions {
   dataDir: string | null;
   host?: string;
   serveClient?: boolean;
+  pickDirectory?: () => DirectoryPickResponse | Promise<DirectoryPickResponse>;
 }
 
 export interface RunningHttpServer {
@@ -20,7 +22,8 @@ export interface RunningHttpServer {
 
 export async function startHttpServer(options: HttpServerOptions): Promise<RunningHttpServer> {
   const host = options.host ?? "127.0.0.1";
-  const context = new AppContext(options.dataDir);
+  const contextOptions = options.pickDirectory ? { pickDirectory: options.pickDirectory } : {};
+  const context = new AppContext(options.dataDir, contextOptions);
   let server: http.Server | null = null;
 
   try {
