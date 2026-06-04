@@ -15,7 +15,15 @@ import {
   listProjectLocalSkillsState,
   migrateProjectLocalSkill
 } from "../src/server/skillhub/skillhub.js";
-import { applyRuleSync, commitRuleSyncTarget, getRuleSyncStatus } from "../src/server/skillhub/ruleSync.js";
+import {
+  applyRuleSync,
+  commitRuleSyncTarget,
+  createRuleFile,
+  createRuleTemplateFile,
+  DEFAULT_CLAUDE_RULE_TEMPLATE,
+  getRuleSyncStatus,
+  prepareRuleFileCreate
+} from "../src/server/skillhub/ruleSync.js";
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../src/server/skillhub/projectSkills.js";
 import type { AppConfig, Project } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
@@ -28,6 +36,28 @@ afterEach(() => {
 });
 
 describe("SkillHub", () => {
+  it("seeds bundled mattpocock and unity skills as ordinary SkillHub entries", () => {
+    directory = testDir("skillhub-default-skills");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+
+    const listed = listSkillHub(db, config, directory);
+    const tdd = listed.skills.find((skill) => skill.folderName === "tdd");
+    const unity = listed.skills.find((skill) => skill.folderName === "unity-mcp-skill");
+
+    expect(listed.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "mattpocock-skills", type: "github", label: "mattpocock/skills", repoKey: "mattpocock-skills" }),
+        expect.objectContaining({ id: "skills", type: "local", label: "skills" })
+      ])
+    );
+    expect(tdd).toMatchObject({ sourceId: "mattpocock-skills", libraryRelativePath: "mattpocock-skills/skills/engineering/tdd" });
+    expect(unity).toMatchObject({ sourceId: "skills", libraryRelativePath: "skills/unity-mcp-skill" });
+    expect(tdd).not.toHaveProperty("builtin");
+    expect(unity).not.toHaveProperty("builtin");
+    db.close();
+  });
+
   it("groups direct library skills under one skills source", () => {
     directory = testDir("skillhub-direct-skills-source");
     const config = configFixture(directory);
@@ -83,8 +113,9 @@ describe("SkillHub", () => {
     });
 
     const listed = listSkillHub(db, config, directory);
+    const historicalSkill = listed.skills.find((skill) => skill.id === "skill-old");
 
-    expect(listed.skills[0]).toMatchObject({ id: "skill-old", sourceId: "skills", source: { id: "skills", label: "skills" } });
+    expect(historicalSkill).toMatchObject({ id: "skill-old", sourceId: "skills", source: { id: "skills", label: "skills" } });
     expect(db.getSkillHubSkill("skill-old")?.source?.id).toBe("skills");
     db.close();
   });
@@ -443,6 +474,47 @@ describe("SkillHub", () => {
     const refreshed = getRuleSyncStatus(project);
     expect(path.resolve(refreshed.gitRoot ?? "")).toBe(path.resolve(projectRoot));
     expect(refreshed.files["CLAUDE.md"]).toMatchObject({ gitManaged: true, dirty: false });
+  });
+
+  it("previews and creates rule files from a template or another rule file", () => {
+    directory = testDir("skillhub-rule-template");
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = projectFixture(projectRoot);
+
+    const before = getRuleSyncStatus(project);
+    expect(before.files["AGENTS.md"].exists).toBe(false);
+    expect(before.files["CLAUDE.md"].exists).toBe(false);
+
+    const preview = prepareRuleFileCreate(project, "CLAUDE.md", "template");
+
+    expect(preview).toMatchObject({ file: "CLAUDE.md", source: "template", sourceFile: null });
+    expect(preview.content).toBe(DEFAULT_CLAUDE_RULE_TEMPLATE);
+
+    const editedContent = "# CLAUDE.md\n\nedited\n";
+    const created = createRuleFile(project, "CLAUDE.md", editedContent);
+
+    expect(created).toMatchObject({ file: "CLAUDE.md", action: "created", message: "已创建 CLAUDE.md" });
+    expect(fs.readFileSync(path.join(projectRoot, "CLAUDE.md"), "utf8")).toBe(editedContent);
+    expect(created.status.files["CLAUDE.md"].exists).toBe(true);
+    expect(created.status.directions["claude-to-agents"].enabled).toBe(true);
+
+    const syncPreview = prepareRuleFileCreate(project, "AGENTS.md", "sync");
+    expect(syncPreview).toMatchObject({ file: "AGENTS.md", source: "sync", sourceFile: "CLAUDE.md" });
+    expect(syncPreview.content).toBe(editedContent);
+    expect(() => createRuleFile(project, "CLAUDE.md", "again")).toThrow("CLAUDE.md 已存在");
+  });
+
+  it("keeps the legacy CLAUDE.md template creator as a direct wrapper", () => {
+    directory = testDir("skillhub-rule-template-legacy");
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = projectFixture(projectRoot);
+
+    const created = createRuleTemplateFile(project);
+
+    expect(created).toMatchObject({ file: "CLAUDE.md", action: "created", message: "已创建 CLAUDE.md" });
+    expect(fs.readFileSync(path.join(projectRoot, "CLAUDE.md"), "utf8")).toBe(DEFAULT_CLAUDE_RULE_TEMPLATE);
   });
 });
 

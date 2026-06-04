@@ -15,10 +15,12 @@ import type {
   ProjectMcpBinding,
   ProjectMcpDisableResult,
   ProjectMcpState,
-  ProjectMcpTarget
+  ProjectMcpTarget,
+  ProjectToolTarget
 } from "../../shared/types.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
+import { listProjectToolTargets } from "../skillhub/projectSkills.js";
 
 interface ServerCandidate {
   serverId: string;
@@ -152,10 +154,11 @@ export function importMcpHubJson(database: AppDatabase, input: string): McpHubIm
 
 export function listProjectMcpState(database: AppDatabase, project: Project): ProjectMcpState {
   ensureBuiltInMcpHubServers(database);
+  const toolTargets = listProjectToolTargets(database, project);
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
-    targets: mcpTargetsForRoot(project.rootPath),
+    targets: mcpTargetsForRoot(project.rootPath, toolTargets),
     servers: withBuiltInFlags(database.listMcpHubServers()),
     bindings: database.listProjectMcpBindings(project.id, project.rootPath),
     localEntries: discoverProjectLocalMcp(database, project)
@@ -171,7 +174,10 @@ export function applyProjectMcpServer(
   ensureBuiltInMcpHubServers(database);
   const server = database.getMcpHubServer(serverId);
   if (!server) throw new Error("McpHub server 不存在");
+  const toolTarget = listProjectToolTargets(database, project).find((target) => target.toolId === toolId);
+  if (!toolTarget?.enabled) throw new Error("该工具未在项目中启用");
   const target = mcpTargetForRoot(project.rootPath, toolId);
+  if (!target.supported) throw new Error(target.reason ?? "该工具暂不支持项目 MCP");
   const rendered = renderServerForTarget(server, project.rootPath, toolId);
   writeRenderedConfig(target.configPath, toolId, server.serverId, rendered);
   const timestamp = nowIso();
@@ -769,18 +775,24 @@ function tomlValue(value: unknown): string {
   return JSON.stringify(String(value));
 }
 
-function mcpTargetsForRoot(rootPath: string): ProjectMcpTarget[] {
-  return supportedTargets.map((toolId) => mcpTargetForRoot(rootPath, toolId));
+function mcpTargetsForRoot(rootPath: string, toolTargets: ProjectToolTarget[] = []): ProjectMcpTarget[] {
+  const projectToolTargets = new Map(toolTargets.map((target) => [target.toolId, target]));
+  return supportedTargets.map((toolId) => mcpTargetForRoot(rootPath, toolId, projectToolTargets.get(toolId)));
 }
 
-function mcpTargetForRoot(rootPath: string, toolId: McpHubTargetToolId): ProjectMcpTarget {
+function mcpTargetForRoot(rootPath: string, toolId: McpHubTargetToolId, toolTarget?: ProjectToolTarget): ProjectMcpTarget {
+  const base = {
+    enabled: toolTarget?.enabled ?? false,
+    inferred: toolTarget?.inferred ?? false,
+    updatedAt: toolTarget?.updatedAt ?? new Date(0).toISOString()
+  };
   if (toolId === "claude") {
-    return { toolId, label: "Claude Code", supported: true, configPath: path.join(rootPath, ".mcp.json"), reason: null };
+    return { ...base, toolId, label: "Claude Code", supported: true, configPath: path.join(rootPath, ".mcp.json"), reason: null };
   }
   if (toolId === "codex") {
-    return { toolId, label: "Codex", supported: true, configPath: path.join(rootPath, ".codex", "config.toml"), reason: null };
+    return { ...base, toolId, label: "Codex", supported: true, configPath: path.join(rootPath, ".codex", "config.toml"), reason: null };
   }
-  return { toolId, label: "OpenCode", supported: true, configPath: path.join(rootPath, "opencode.json"), reason: null };
+  return { ...base, toolId, label: "OpenCode", supported: true, configPath: path.join(rootPath, "opencode.json"), reason: null };
 }
 
 function parseLooseJson(input: string): unknown {

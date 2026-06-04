@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
   AppConfig,
   Project,
@@ -67,6 +68,9 @@ interface LocalSkillMigrationTargetPlan {
 }
 
 const DIRECT_SKILLS_SOURCE_ID = "skills";
+const DEFAULT_SKILLHUB_SEEDED_SETTING = "skillhub.default-sources.seeded.v1";
+const MATT_POCOCK_REPO_KEY = "mattpocock-skills";
+const UNITY_MCP_SKILL_FOLDER = "unity-mcp-skill";
 
 export function resolveSkillHubConfig(config: AppConfig, dataDir: string): SkillHubConfig {
   const rootDir = config.skillhub.rootDir.trim() || path.join(dataDir, "skillhub");
@@ -81,12 +85,23 @@ export function ensureSkillHub(config: AppConfig, dataDir: string): SkillHubConf
 
 export function listSkillHub(database: AppDatabase, config: AppConfig, dataDir: string, query = "") {
   const resolved = ensureSkillHub(config, dataDir);
+  seedDefaultSkillHubSources(database, config, dataDir);
   assignDirectLibrarySkillsSource(database, resolved.libraryDir);
   return {
     config: resolved,
     sources: database.listSkillHubSources(),
     skills: database.listSkillHubSkills(query)
   };
+}
+
+export function seedDefaultSkillHubSources(database: AppDatabase, config: AppConfig, dataDir: string): void {
+  if (database.getSetting(DEFAULT_SKILLHUB_SEEDED_SETTING, false)) return;
+  const resolved = ensureSkillHub(config, dataDir);
+  const seededMattPocock = seedDefaultMattPocockSkills(database, resolved);
+  const seededUnityMcp = seedDefaultUnityMcpSkill(database, config, dataDir);
+  if (seededMattPocock || seededUnityMcp) {
+    database.setSetting(DEFAULT_SKILLHUB_SEEDED_SETTING, true);
+  }
 }
 
 export function importLocalSkills(
@@ -290,7 +305,12 @@ export function listProjectLocalSkillsState(database: AppDatabase, project: Proj
   }
 
   skills.sort((left, right) => left.type.localeCompare(right.type) || left.toolId.localeCompare(right.toolId) || left.folderName.localeCompare(right.folderName));
-  return { projectId: project.id, toolTargets, migrationSources: database.listSkillHubSources().filter((source) => source.type === "local"), skills };
+  return {
+    projectId: project.id,
+    toolTargets,
+    migrationSources: database.listSkillHubSources().filter((source) => source.type === "local"),
+    skills
+  };
 }
 
 export function migrateProjectLocalSkill(
@@ -1011,6 +1031,97 @@ function normalizeRelativePath(input: string): string {
 
 function stripYamlQuotes(value: string): string {
   return value.replace(/^["']|["']$/g, "").trim();
+}
+
+function seedDefaultMattPocockSkills(database: AppDatabase, resolved: SkillHubConfig): boolean {
+  if (database.getSkillHubSourceByRepoKey(MATT_POCOCK_REPO_KEY)) return true;
+  const installedSkillsRoot = resolveBundledPath(".agents", "skills");
+  const skillsLockPath = resolveBundledPath("skills-lock.json");
+  if (!fs.existsSync(installedSkillsRoot) || !fs.existsSync(skillsLockPath)) return false;
+  const lock = readSkillsLock(skillsLockPath);
+  const entries = Object.entries(lock.skills).filter(([, entry]) => entry.source === "mattpocock/skills" && entry.sourceType === "github");
+  if (entries.length === 0) return false;
+
+  const checkoutPath = path.join(resolved.rootDir, "sources", MATT_POCOCK_REPO_KEY, "checkout");
+  fs.rmSync(checkoutPath, { recursive: true, force: true });
+  for (const [skillId, entry] of entries) {
+    const skillPath = path.join(installedSkillsRoot, skillId);
+    if (!hasSkillMarker(skillPath)) continue;
+    replaceDirectory(skillPath, path.join(checkoutPath, path.dirname(entry.skillPath)));
+  }
+
+  const discoveries = discoverSkills(checkoutPath, null, MATT_POCOCK_REPO_KEY);
+  if (discoveries.length === 0) return false;
+  const source = database.upsertSkillHubSource({
+    id: MATT_POCOCK_REPO_KEY,
+    type: "github",
+    label: "mattpocock/skills",
+    repoKey: MATT_POCOCK_REPO_KEY,
+    owner: "mattpocock",
+    repo: "skills",
+    branch: null,
+    input: "mattpocock/skills",
+    inputPath: null,
+    resolvedPath: null,
+    currentRevision: null,
+    checkoutPath
+  });
+  commitDiscoveredSkills(database, resolved.libraryDir, source, discoveries, [], {});
+  return true;
+}
+
+function seedDefaultUnityMcpSkill(database: AppDatabase, config: AppConfig, dataDir: string): boolean {
+  const unityMcpSkillPath = resolveBundledPath("builtin-skills", UNITY_MCP_SKILL_FOLDER);
+  if (!hasSkillMarker(unityMcpSkillPath)) return false;
+  importLocalSkills(database, config, dataDir, unityMcpSkillPath);
+  return true;
+}
+
+function readSkillsLock(lockPath: string): { skills: Record<string, { source: string; sourceType: string; skillPath: string }> } {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as unknown;
+    if (!isRecord(parsed) || !isRecord(parsed.skills)) return { skills: {} };
+    const skills: Record<string, { source: string; sourceType: string; skillPath: string }> = {};
+    for (const [skillId, value] of Object.entries(parsed.skills)) {
+      if (!isRecord(value)) continue;
+      if (typeof value.source !== "string" || typeof value.sourceType !== "string" || typeof value.skillPath !== "string") continue;
+      skills[skillId] = { source: value.source, sourceType: value.sourceType, skillPath: value.skillPath };
+    }
+    return { skills };
+  } catch {
+    return { skills: {} };
+  }
+}
+
+function resolveBundledPath(...segments: string[]): string {
+  const roots = bundledRootCandidates();
+  const existing = roots.map((root) => path.join(root, ...segments)).find((candidate) => fs.existsSync(candidate));
+  return existing ?? path.join(roots[0] ?? process.cwd(), ...segments);
+}
+
+function bundledRootCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return uniquePaths([
+    process.cwd(),
+    path.resolve(moduleDir, "../../.."),
+    path.resolve(moduleDir, "../../../..")
+  ]);
+}
+
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of paths) {
+    const normalized = path.resolve(item).toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(item);
+  }
+  return output;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function usesDirectSkillsSource(discoveries: DiscoveredSkill[]): boolean {

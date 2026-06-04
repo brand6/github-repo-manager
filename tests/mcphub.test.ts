@@ -80,6 +80,7 @@ describe("McpHub", () => {
     fs.writeFileSync(path.join(projectRoot, ".codex", "config.toml"), 'model = "gpt-5"\n\n[mcp_servers.keep]\ncommand = "keep"\n', "utf8");
     fs.writeFileSync(path.join(projectRoot, "opencode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json", provider: {} }, null, 2), "utf8");
     const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode"]);
     const server = db.upsertMcpHubServer({
       serverId: "docs",
       name: "docs",
@@ -122,6 +123,38 @@ describe("McpHub", () => {
 
     expect(codex.configPath).toBe(path.join(projectRoot, ".codex", "config.toml"));
     expect(opencode.configPath).toBe(path.join(projectRoot, "opencode.json"));
+    db.close();
+  });
+
+  it("marks MCP targets by current project tool enablement and refuses disabled tools", () => {
+    directory = testDir("mcphub-project-tool-targets");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude", "codex"]);
+    const server = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: "Docs server",
+      transport: "stdio",
+      command: "node",
+      args: [],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+
+    const state = listProjectMcpState(db, project);
+    expect(state.targets.map((target) => ({ toolId: target.toolId, enabled: target.enabled }))).toEqual([
+      { toolId: "claude", enabled: true },
+      { toolId: "codex", enabled: true },
+      { toolId: "opencode", enabled: false }
+    ]);
+
+    expect(() => applyProjectMcpServer(db, project, "opencode", server.serverId)).toThrow("该工具未在项目中启用");
+    expect(applyProjectMcpServer(db, project, "claude", server.serverId)).toMatchObject({ toolId: "claude" });
     db.close();
   });
 

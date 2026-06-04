@@ -2,8 +2,11 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppConfig,
+  HookHubSuite,
   Project,
   ProjectDetail,
+  ProjectHookBinding,
+  ProjectHookState,
   ProjectLocalSkillsState,
   ProjectRepairCandidate,
   ProjectToolTarget,
@@ -39,6 +42,14 @@ const clientMock = vi.hoisted(() => ({
   mcphub: vi.fn(),
   importMcpHubJson: vi.fn(),
   deleteMcpHubServer: vi.fn(),
+  hookhub: vi.fn(),
+  createHookHubSuite: vi.fn(),
+  updateHookHubSuite: vi.fn(),
+  deleteHookHubSuite: vi.fn(),
+  exportHookHubSuite: vi.fn(),
+  syncHookHubSuite: vi.fn(),
+  importHookHubSuite: vi.fn(),
+  importNativeHooks: vi.fn(),
   projectToolTargets: vi.fn(),
   updateProjectToolTargets: vi.fn(),
   projectSkillTargets: vi.fn(),
@@ -49,9 +60,19 @@ const clientMock = vi.hoisted(() => ({
   applyProjectMcp: vi.fn(),
   disableProjectMcp: vi.fn(),
   migrateProjectLocalMcp: vi.fn(),
+  projectHooks: vi.fn(),
+  writeProjectHooks: vi.fn(),
+  shareProjectHooks: vi.fn(),
+  applyHookHubSuite: vi.fn(),
+  syncProjectHookTool: vi.fn(),
+  syncProjectHooks: vi.fn(),
   ruleSyncStatus: vi.fn(),
   applyRuleSync: vi.fn(),
   commitRuleSync: vi.fn(),
+  prepareRuleFileCreate: vi.fn(),
+  createRuleFile: vi.fn(),
+  createRuleTemplateFile: vi.fn(),
+  openRuleFile: vi.fn(),
   drives: vi.fn(),
   pickDirectory: vi.fn(),
   createDirectory: vi.fn(),
@@ -138,10 +159,44 @@ describe("HomePage", () => {
       skippedMissingFiles: [],
       failures: []
     });
+    clientMock.hookhub.mockResolvedValue({ suites: [hookHubSuiteFixture()] });
+    clientMock.createHookHubSuite.mockResolvedValue(hookHubSuiteFixture());
+    clientMock.updateHookHubSuite.mockResolvedValue(hookHubSuiteFixture());
+    clientMock.deleteHookHubSuite.mockResolvedValue({ suiteId: "suite-1", deleted: true });
+    clientMock.exportHookHubSuite.mockResolvedValue({ format: "hookhub-suite-v1", suite: hookHubSuiteFixture() });
+    clientMock.syncHookHubSuite.mockResolvedValue({ suiteId: "suite-1", projectId: null, updated: [], skipped: [] });
+    clientMock.importHookHubSuite.mockResolvedValue({ action: "created", suite: hookHubSuiteFixture(), conflict: null });
+    clientMock.importNativeHooks.mockResolvedValue({ action: "created", suite: hookHubSuiteFixture(), conflict: null });
     clientMock.projectToolTargets.mockResolvedValue([]);
     clientMock.projectSkillTargets.mockResolvedValue({ projectId: "project-1", toolTargets: [], skillTargets: [], skills: [] });
     clientMock.projectLocalSkills.mockResolvedValue({ projectId: "project-1", toolTargets: [], migrationSources: [], skills: [] });
     clientMock.projectMcp.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", targets: [], servers: [], bindings: [], localEntries: [] });
+    clientMock.projectHooks.mockResolvedValue(projectHookStateFixture(projectFixture("E:\\old")));
+    clientMock.writeProjectHooks.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", toolId: "claude", status: "drifted" });
+    clientMock.shareProjectHooks.mockResolvedValue({ suite: hookHubSuiteFixture(), sourceToolId: "claude", sourceConfigPath: "E:\\old\\.claude\\settings.json" });
+    clientMock.applyHookHubSuite.mockResolvedValue({
+      projectId: "project-1",
+      targetRootPath: "E:\\old",
+      toolId: "claude",
+      suite: hookHubSuiteFixture(),
+      binding: projectHookBindingFixture(projectFixture("E:\\old")),
+      configPath: "E:\\old\\.claude\\settings.json",
+      status: "current",
+      backup: { mode: "missing", backupPath: null, metadataPath: null, commit: null, message: "目标配置文件不存在，无需备份" },
+      warnings: []
+    });
+    clientMock.syncProjectHookTool.mockResolvedValue({
+      projectId: "project-1",
+      targetRootPath: "E:\\old",
+      toolId: "claude",
+      suite: hookHubSuiteFixture(),
+      binding: projectHookBindingFixture(projectFixture("E:\\old")),
+      configPath: "E:\\old\\.claude\\settings.json",
+      status: "current",
+      backup: { mode: "missing", backupPath: null, metadataPath: null, commit: null, message: "目标配置文件不存在，无需备份" },
+      warnings: []
+    });
+    clientMock.syncProjectHooks.mockResolvedValue({ suiteId: null, projectId: "project-1", updated: [], skipped: [] });
     clientMock.applyProjectMcp.mockResolvedValue({
       projectId: "project-1",
       targetRootPath: "E:\\old",
@@ -235,6 +290,35 @@ describe("HomePage", () => {
       message: "目标规则文件已 commit",
       status: ruleSyncStatusFixture(projectFixture("E:\\old"))
     });
+    clientMock.createRuleTemplateFile.mockResolvedValue({
+      projectId: "project-1",
+      projectRoot: "E:\\old",
+      file: "CLAUDE.md",
+      path: "E:\\old\\CLAUDE.md",
+      action: "created",
+      message: "已创建 CLAUDE.md 规则模板",
+      status: ruleSyncStatusFixture(projectFixture("E:\\old"))
+    });
+    clientMock.prepareRuleFileCreate.mockResolvedValue({
+      projectId: "project-1",
+      projectRoot: "E:\\old",
+      file: "CLAUDE.md",
+      path: "E:\\old\\CLAUDE.md",
+      source: "template",
+      sourceFile: null,
+      content: "# CLAUDE.md\n\n默认模板\n",
+      message: "将使用默认模板创建 CLAUDE.md"
+    });
+    clientMock.createRuleFile.mockResolvedValue({
+      projectId: "project-1",
+      projectRoot: "E:\\old",
+      file: "CLAUDE.md",
+      path: "E:\\old\\CLAUDE.md",
+      action: "created",
+      message: "已创建 CLAUDE.md",
+      status: ruleSyncStatusFixture(projectFixture("E:\\old"))
+    });
+    clientMock.openRuleFile.mockResolvedValue({ opened: true, path: "E:\\old\\CLAUDE.md" });
     clientMock.repairCandidates.mockResolvedValue([]);
     clientMock.drives.mockResolvedValue([{ root: "E:\\", label: "E:\\" }]);
     clientMock.pickDirectory.mockResolvedValue({ path: "E:\\picked", cancelled: false });
@@ -342,6 +426,57 @@ describe("HomePage", () => {
     expect(screen.getByRole("region", { name: "McpHub JSON 导入" })).toBeInTheDocument();
     expect(screen.getByText("context7")).toBeInTheDocument();
     expect(screen.queryByText("还没有 MCP server")).not.toBeInTheDocument();
+  });
+
+  it("opens HookHub from the topbar", async () => {
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "HookHub" }));
+
+    expect(await screen.findByRole("heading", { name: "HookHub" })).toBeInTheDocument();
+    expect(clientMock.hookhub).toHaveBeenCalledWith("");
+    const operations = screen.getByRole("region", { name: "HookHub 操作" });
+    expect(within(operations).getByRole("button", { name: "创建 suite" })).toBeInTheDocument();
+    expect(within(operations).getByRole("button", { name: "导入 suite JSON" })).toBeInTheDocument();
+    expect(within(operations).getByRole("button", { name: "导入原生 hooks" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "HookHub suite 创建" })).not.toBeInTheDocument();
+    expect(screen.getByText("提交前检查")).toBeInTheDocument();
+
+    const suiteList = screen.getByRole("region", { name: "HookHub suite 列表" });
+    const suiteCard = within(suiteList).getByText("提交前检查").closest(".hookhub-suite-card") as HTMLElement;
+    fireEvent.click(within(suiteCard).getByRole("button", { name: "导出" }));
+    await waitFor(() => expect(clientMock.exportHookHubSuite).toHaveBeenCalledWith("suite-1"));
+    expect(await screen.findByRole("dialog", { name: "提交前检查 导出 JSON" })).toBeInTheDocument();
+  });
+
+  it("creates a HookHub suite from JSON input", async () => {
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "HookHub" }));
+
+    const operations = await screen.findByRole("region", { name: "HookHub 操作" });
+    fireEvent.click(within(operations).getByRole("button", { name: "创建 suite" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "创建 HookHub suite" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "JSON" }));
+    fireEvent.change(within(dialog).getByLabelText("suite JSON"), {
+      target: {
+        value: '{"name":"JSON suite","requiredEnv":["CI_TOKEN"],"payloads":{"claude":{"PreToolUse":[]}}}'
+      }
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建 suite" }));
+
+    await waitFor(() =>
+      expect(clientMock.createHookHubSuite).toHaveBeenCalledWith({
+        name: "JSON suite",
+        description: null,
+        riskNotes: null,
+        requiredEnv: ["CI_TOKEN"],
+        payloads: { claude: { PreToolUse: [] } }
+      })
+    );
   });
 
   it("separates SkillHub import/search and groups skills by source", async () => {
@@ -1054,6 +1189,62 @@ describe("HomePage", () => {
     expect(await screen.findByText("本地技能已迁移到 SkillHub")).toBeInTheDocument();
   });
 
+  it("clears stale local skill rows while reopening the project skill panel refreshes from disk", async () => {
+    const project = projectFixture("E:\\old");
+    const initialLocalSkills: ProjectLocalSkillsState = {
+      projectId: project.id,
+      toolTargets: [projectToolTargetFixture(project, "codex", true)],
+      migrationSources: [],
+      skills: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          type: "local",
+          folderName: "review",
+          skillName: "Review",
+          description: "Local review",
+          skillPath: `${project.rootPath}\\.codex\\skills\\review`,
+          skillHubSkill: null,
+          migratable: true,
+          reason: null
+        }
+      ]
+    };
+    const refreshedLocalSkills: ProjectLocalSkillsState = {
+      ...initialLocalSkills,
+      skills: []
+    };
+    let resolveRefresh!: (state: ProjectLocalSkillsState) => void;
+    const refreshPromise = new Promise<ProjectLocalSkillsState>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectToolTargets.mockResolvedValue([projectToolTargetFixture(project, "codex", true)]);
+    clientMock.projectLocalSkills.mockResolvedValueOnce(initialLocalSkills).mockReturnValueOnce(refreshPromise);
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    fireEvent.click(within(panel).getByRole("tab", { name: "本地技能" }));
+    expect(await within(panel).findByText("review")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    await waitFor(() => expect(within(panel).getByText("正在读取本地技能...")).toBeInTheDocument());
+    expect(within(panel).queryByText("review")).not.toBeInTheDocument();
+
+    resolveRefresh(refreshedLocalSkills);
+
+    expect(await within(panel).findByText("没有发现项目技能")).toBeInTheDocument();
+    await waitFor(() => expect(clientMock.projectLocalSkills).toHaveBeenLastCalledWith(project.id, project.rootPath));
+  });
+
   it("opens project skill management for the selected child session group", async () => {
     const project = projectFixture("E:\\repo");
     const childRoot = "E:\\repo\\packages\\app";
@@ -1073,6 +1264,13 @@ describe("HomePage", () => {
 
     fireEvent.click(within(childGroup).getByRole("button", { name: "MCP" }));
     await waitFor(() => expect(clientMock.projectMcp).toHaveBeenLastCalledWith(project.id, childRoot));
+
+    fireEvent.click(within(childGroup).getByRole("button", { name: "Hooks" }));
+    await waitFor(() => expect(clientMock.projectHooks).toHaveBeenLastCalledWith(project.id, childRoot));
+    const panel = await screen.findByRole("complementary", { name: "项目 Hooks 管理" });
+    expect(within(panel).getByText("Claude Code")).toBeInTheDocument();
+    expect(within(panel).getByText("current")).toBeInTheDocument();
+    expect(within(panel).getByText("OpenCode")).toBeInTheDocument();
   });
 
   it("applies a McpHub server from the project MCP panel", async () => {
@@ -1094,7 +1292,18 @@ describe("HomePage", () => {
     const initialProjectMcp = {
       projectId: project.id,
       targetRootPath: project.rootPath,
-      targets: [{ toolId: "claude", label: "Claude Code", supported: true, configPath: `${project.rootPath}\\.mcp.json`, reason: null }],
+      targets: [
+        {
+          toolId: "claude",
+          label: "Claude Code",
+          enabled: true,
+          inferred: true,
+          supported: true,
+          configPath: `${project.rootPath}\\.mcp.json`,
+          reason: null,
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ],
       servers: [server],
       bindings: [],
       localEntries: []
@@ -1135,6 +1344,98 @@ describe("HomePage", () => {
 
     await waitFor(() => expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "claude", project.rootPath));
     expect(await screen.findByText("MCP 已应用到项目")).toBeInTheDocument();
+  });
+
+  it("applies a McpHub server to all target tools from the row checkbox", async () => {
+    const project = projectFixture("E:\\old");
+    const server = {
+      serverId: "context7",
+      name: "context7",
+      description: "Context7 docs",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@upstash/context7-mcp"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: [],
+      createdAt: "2026-06-01T00:00:00Z",
+      updatedAt: "2026-06-01T00:00:00Z"
+    };
+    const targets = [
+      {
+        toolId: "claude",
+        label: "Claude Code",
+        enabled: true,
+        inferred: true,
+        supported: true,
+        configPath: `${project.rootPath}\\.mcp.json`,
+        reason: null,
+        updatedAt: "2026-06-01T00:00:00Z"
+      },
+      {
+        toolId: "codex",
+        label: "Codex",
+        enabled: true,
+        inferred: true,
+        supported: true,
+        configPath: `${project.rootPath}\\.codex\\config.toml`,
+        reason: null,
+        updatedAt: "2026-06-01T00:00:00Z"
+      },
+      {
+        toolId: "opencode",
+        label: "OpenCode",
+        enabled: false,
+        inferred: false,
+        supported: true,
+        configPath: `${project.rootPath}\\opencode.json`,
+        reason: null,
+        updatedAt: "2026-06-01T00:00:00Z"
+      }
+    ];
+    const initialProjectMcp = {
+      projectId: project.id,
+      targetRootPath: project.rootPath,
+      targets,
+      servers: [server],
+      bindings: [],
+      localEntries: []
+    };
+    const appliedProjectMcp = {
+      ...initialProjectMcp,
+      bindings: targets.map((target) => ({
+        projectId: project.id,
+        targetRootPath: project.rootPath,
+        toolId: target.toolId,
+        serverId: "context7",
+        appliedServerId: "context7",
+        appliedAt: "2026-06-01T00:00:00Z",
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-06-01T00:00:00Z"
+      }))
+    };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectMcp.mockResolvedValueOnce(initialProjectMcp).mockResolvedValueOnce(appliedProjectMcp);
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目 MCP 管理" });
+    fireEvent.click(within(panel).getByRole("button", { name: "McpHub MCP" }));
+    fireEvent.click(within(panel).getByRole("checkbox", { name: "选择 context7 全部工具" }));
+
+    await waitFor(() => expect(clientMock.applyProjectMcp).toHaveBeenCalledTimes(2));
+    expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "claude", project.rootPath);
+    expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "codex", project.rootPath);
+    expect(clientMock.applyProjectMcp).not.toHaveBeenCalledWith(project.id, "context7", "opencode", project.rootPath);
+    expect(within(panel).queryByRole("checkbox", { name: "opencode" })).not.toBeInTheDocument();
+    expect(await screen.findByText("MCP 已应用到 2 个工具")).toBeInTheDocument();
   });
 
   it("shows merge repair candidates for missing cwd projects", () => {
@@ -1446,6 +1747,67 @@ describe("HomePage", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "同步" }));
     await waitFor(() => expect(clientMock.applyRuleSync).toHaveBeenCalledWith(project.id, "claude-to-agents"));
+  });
+
+  it("creates the CLAUDE.md template from an editable preview and then shows view", async () => {
+    const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
+    const emptyStatus = ruleSyncStatusWithoutFiles(project);
+    const createdStatus = ruleSyncStatusWithOnlyClaude(project);
+    const editedContent = "# CLAUDE.md\n\n编辑后的规则\n";
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.ruleSyncStatus.mockResolvedValue(emptyStatus);
+    clientMock.prepareRuleFileCreate.mockResolvedValue({
+      projectId: project.id,
+      projectRoot: project.rootPath,
+      file: "CLAUDE.md",
+      path: `${project.rootPath}\\CLAUDE.md`,
+      source: "template",
+      sourceFile: null,
+      content: "# CLAUDE.md\n\n默认模板\n",
+      message: "将使用默认模板创建 CLAUDE.md"
+    });
+    clientMock.createRuleFile.mockResolvedValue({
+      projectId: project.id,
+      projectRoot: project.rootPath,
+      file: "CLAUDE.md",
+      path: `${project.rootPath}\\CLAUDE.md`,
+      action: "created",
+      message: "已创建 CLAUDE.md",
+      status: createdStatus
+    });
+
+    render(<App />);
+
+    await screen.findByText("new-ai-game");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+
+    const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
+    expect(await within(ruleSyncSection).findByText("未发现规则文件")).toBeInTheDocument();
+    const initialClaudeRow = within(ruleSyncSection).getByRole("article", { name: "CLAUDE.md 规则文件" });
+    expect(within(initialClaudeRow).getByRole("button", { name: "创建" })).toBeInTheDocument();
+    expect(within(ruleSyncSection).queryByRole("button", { name: "同步" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(initialClaudeRow).getByRole("button", { name: "创建" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "创建CLAUDE.md" });
+    await waitFor(() => expect(clientMock.prepareRuleFileCreate).toHaveBeenCalledWith(project.id, "CLAUDE.md", "template"));
+    expect(within(dialog).getByRole("radio", { name: /默认模板/ })).toBeChecked();
+    expect(within(dialog).getByRole("radio", { name: /从AGENTS.md同步/ })).toBeDisabled();
+    const editor = within(dialog).getByRole("textbox", { name: "CLAUDE.md 预览内容" });
+    expect(editor).toHaveValue("# CLAUDE.md\n\n默认模板\n");
+
+    fireEvent.change(editor, { target: { value: editedContent } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(clientMock.createRuleFile).toHaveBeenCalledWith(project.id, "CLAUDE.md", editedContent));
+    expect(within(ruleSyncSection).queryByRole("button", { name: "查看规则" })).not.toBeInTheDocument();
+
+    const claudeRow = await within(ruleSyncSection).findByRole("article", { name: "CLAUDE.md 规则文件" });
+    const viewButton = await within(claudeRow).findByRole("button", { name: "查看" });
+    fireEvent.click(viewButton);
+    await waitFor(() => expect(clientMock.openRuleFile).toHaveBeenCalledWith(project.id, "CLAUDE.md"));
   });
 
   it("places refresh index before settings outside project detail", async () => {
@@ -1856,6 +2218,99 @@ function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boo
   };
 }
 
+function hookHubSuiteFixture(): HookHubSuite {
+  return {
+    suiteId: "suite-1",
+    name: "提交前检查",
+    description: "运行项目检查",
+    riskNotes: "命令 hooks 会执行本地检查",
+    requiredEnv: ["CI_TOKEN"],
+    payloads: {
+      claude: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test" }] }] }
+    },
+    toolIds: ["claude"],
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z"
+  };
+}
+
+function projectHookBindingFixture(project: Project): ProjectHookBinding {
+  return {
+    projectId: project.id,
+    targetRootPath: project.rootPath,
+    toolId: "claude",
+    suiteId: "suite-1",
+    configPath: `${project.rootPath}\\.claude\\settings.json`,
+    scope: "project",
+    appliedFingerprint: "fingerprint",
+    appliedAt: "2026-06-01T00:00:00Z",
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z"
+  };
+}
+
+function projectHookStateFixture(project: Project): ProjectHookState {
+  const suite = hookHubSuiteFixture();
+  return {
+    projectId: project.id,
+    targetRootPath: project.rootPath,
+    suites: [suite],
+    tools: [
+      {
+        projectId: project.id,
+        targetRootPath: project.rootPath,
+        toolId: "claude",
+        label: "Claude Code",
+        supported: true,
+        configPath: `${project.rootPath}\\.claude\\settings.json`,
+        scope: "project",
+        status: "current",
+        hooks: suite.payloads.claude ?? null,
+        hooksSummary: "1 个事件：PreToolUse",
+        reason: null,
+        error: null,
+        binding: projectHookBindingFixture(project),
+        suite,
+        discovery: []
+      },
+      {
+        projectId: project.id,
+        targetRootPath: project.rootPath,
+        toolId: "codex",
+        label: "Codex",
+        supported: true,
+        configPath: `${project.rootPath}\\.codex\\hooks.json`,
+        scope: "project",
+        status: "missing",
+        hooks: null,
+        hooksSummary: "无 hooks",
+        reason: "未配置 hooks",
+        error: null,
+        binding: null,
+        suite: null,
+        discovery: []
+      },
+      {
+        projectId: project.id,
+        targetRootPath: project.rootPath,
+        toolId: "opencode",
+        label: "OpenCode",
+        supported: false,
+        configPath: null,
+        scope: null,
+        status: "unsupported",
+        hooks: null,
+        hooksSummary: "plugins: audit.ts",
+        reason: "OpenCode hooks 是 plugin 文件和 opencode.json plugin 列表，MVP 仅发现不写入",
+        error: null,
+        binding: null,
+        suite: null,
+        discovery: ["plugins: audit.ts"]
+      }
+    ]
+  };
+}
+
 function skillHubSourceFixture(id: string, label: string, type: SkillHubSource["type"]): SkillHubSource {
   return {
     id,
@@ -1960,6 +2415,32 @@ function ruleSyncStatusFixture(project: Project) {
       "claude-to-agents": { enabled: true, reason: null }
     }
   };
+}
+
+function ruleSyncStatusWithoutFiles(project: Project) {
+  const status = ruleSyncStatusFixture(project);
+  status.files["AGENTS.md"].exists = false;
+  status.files["AGENTS.md"].mtime = null;
+  status.files["AGENTS.md"].gitManaged = null;
+  status.files["AGENTS.md"].dirty = null;
+  status.files["CLAUDE.md"].exists = false;
+  status.files["CLAUDE.md"].mtime = null;
+  status.files["CLAUDE.md"].gitManaged = null;
+  status.files["CLAUDE.md"].dirty = null;
+  status.directions["agents-to-claude"] = { enabled: false, reason: "AGENTS.md 不存在" };
+  status.directions["claude-to-agents"] = { enabled: false, reason: "CLAUDE.md 不存在" };
+  return status;
+}
+
+function ruleSyncStatusWithOnlyClaude(project: Project) {
+  const status = ruleSyncStatusFixture(project);
+  status.files["AGENTS.md"].exists = false;
+  status.files["AGENTS.md"].mtime = null;
+  status.files["AGENTS.md"].gitManaged = null;
+  status.files["AGENTS.md"].dirty = null;
+  status.directions["agents-to-claude"] = { enabled: false, reason: "AGENTS.md 不存在" };
+  status.directions["claude-to-agents"] = { enabled: true, reason: null };
+  return status;
 }
 
 function emptyRelocationResult(oldRoot: string, newRoot: string): RelocationResult {

@@ -296,9 +296,12 @@ export interface ProjectLocalMcpEntry {
 export interface ProjectMcpTarget {
   toolId: McpHubTargetToolId;
   label: string;
+  enabled: boolean;
+  inferred: boolean;
   supported: boolean;
   configPath: string;
   reason: string | null;
+  updatedAt: string;
 }
 
 export interface ProjectMcpState {
@@ -355,6 +358,135 @@ export interface ProjectLocalMcpMigrationResult {
   message: string | null;
 }
 
+export type HookHubSupportedToolId = Extract<ToolId, "claude" | "codex" | "qwen" | "qoder">;
+export type HookHubDiscoveryToolId = Extract<ToolId, "claude" | "codex" | "qwen" | "qoder" | "opencode" | "copilot">;
+export type HookHubProjectStatus = "current" | "outdated" | "drifted" | "missing" | "unmanaged" | "invalid" | "unsupported";
+export type HookHubScope = "project";
+export type HookHubApplyMode = "overwrite" | "upload-then-overwrite" | "update-bound-suite-then-overwrite" | "save-as-new-suite-then-overwrite";
+export type HookHubImportConflictMode = "overwrite" | "rename" | "cancel";
+
+export interface HookHubSuite {
+  suiteId: string;
+  name: string;
+  description: string | null;
+  riskNotes: string | null;
+  requiredEnv: string[];
+  payloads: Partial<Record<HookHubSupportedToolId, unknown>>;
+  toolIds: HookHubSupportedToolId[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HookHubList {
+  suites: HookHubSuite[];
+}
+
+export interface HookHubSuiteInput {
+  name: string;
+  description?: string | null;
+  riskNotes?: string | null;
+  requiredEnv?: string[];
+  payloads?: Partial<Record<HookHubSupportedToolId, unknown>>;
+}
+
+export interface ProjectHookBinding {
+  projectId: string;
+  targetRootPath: string;
+  toolId: HookHubSupportedToolId;
+  suiteId: string;
+  configPath: string;
+  scope: HookHubScope;
+  appliedFingerprint: string;
+  appliedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectHookToolState {
+  projectId: string;
+  targetRootPath: string;
+  toolId: HookHubDiscoveryToolId;
+  label: string;
+  supported: boolean;
+  configPath: string | null;
+  scope: HookHubScope | null;
+  status: HookHubProjectStatus;
+  hooks: unknown | null;
+  hooksSummary: string;
+  reason: string | null;
+  error: string | null;
+  binding: ProjectHookBinding | null;
+  suite: HookHubSuite | null;
+  discovery: string[];
+}
+
+export interface ProjectHookState {
+  projectId: string;
+  targetRootPath: string;
+  tools: ProjectHookToolState[];
+  suites: HookHubSuite[];
+}
+
+export interface ProjectHookBindingRemovalResult {
+  projectId: string;
+  targetRootPath: string;
+  toolId: HookHubSupportedToolId;
+  removed: boolean;
+  state: ProjectHookToolState;
+}
+
+export interface HookHubBackupResult {
+  mode: "git-clean" | "git-commit" | "local-backup" | "missing";
+  backupPath: string | null;
+  metadataPath: string | null;
+  commit: string | null;
+  message: string;
+}
+
+export interface HookHubApplyResult {
+  projectId: string;
+  targetRootPath: string;
+  toolId: HookHubSupportedToolId;
+  suite: HookHubSuite;
+  binding: ProjectHookBinding;
+  configPath: string;
+  status: HookHubProjectStatus;
+  backup: HookHubBackupResult;
+  warnings: string[];
+}
+
+export interface HookHubShareResult {
+  suite: HookHubSuite;
+  sourceToolId: HookHubSupportedToolId;
+  sourceConfigPath: string;
+}
+
+export interface HookHubSyncSkipped {
+  projectId: string;
+  targetRootPath: string;
+  toolId: HookHubSupportedToolId;
+  status: HookHubProjectStatus;
+  reason: string;
+}
+
+export interface HookHubSyncResult {
+  suiteId: string | null;
+  projectId: string | null;
+  updated: HookHubApplyResult[];
+  skipped: HookHubSyncSkipped[];
+}
+
+export interface HookHubExportDocument {
+  format: "hookhub-suite-v1";
+  suite: HookHubSuite;
+}
+
+export interface HookHubImportResult {
+  action: "created" | "overwritten" | "renamed" | "needs-confirmation" | "cancelled";
+  suite: HookHubSuite | null;
+  conflict: HookHubSuite | null;
+}
+
 export type SkillHubUpdateKind = "added" | "changed" | "deleted" | "moved";
 
 export interface SkillHubUpdateItem {
@@ -396,6 +528,7 @@ export interface LocalOpenResponse {
 
 export type RuleFileName = "AGENTS.md" | "CLAUDE.md";
 export type RuleSyncDirection = "agents-to-claude" | "claude-to-agents";
+export type RuleCreateSource = "sync" | "template";
 
 export interface RuleFileStatus {
   file: RuleFileName;
@@ -437,6 +570,29 @@ export interface RuleSyncCommitResult {
   message: string;
   status: RuleSyncStatus;
 }
+
+export interface RuleCreatePreview {
+  projectId: string;
+  projectRoot: string;
+  file: RuleFileName;
+  path: string;
+  source: RuleCreateSource;
+  sourceFile: RuleFileName | null;
+  content: string;
+  message: string;
+}
+
+export interface RuleCreateResult {
+  projectId: string;
+  projectRoot: string;
+  file: RuleFileName;
+  path: string;
+  action: "created";
+  message: string;
+  status: RuleSyncStatus;
+}
+
+export type RuleTemplateResult = RuleCreateResult;
 
 export interface ParserWarning {
   id: string;

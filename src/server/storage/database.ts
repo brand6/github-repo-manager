@@ -2,10 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  HookHubSupportedToolId,
+  HookHubSuite,
   McpHubServer,
   McpHubTargetToolId,
   ParserWarning,
   Project,
+  ProjectHookBinding,
   ProjectMcpBinding,
   ProjectSkillTarget,
   ProjectToolTarget,
@@ -243,6 +246,32 @@ export class AppDatabase {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (project_id, normalized_target_root_path, tool_id, server_id)
       );
+
+      CREATE TABLE IF NOT EXISTS hookhub_suites (
+        suite_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT,
+        risk_notes TEXT,
+        required_env_json TEXT NOT NULL,
+        payloads_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS project_hook_bindings (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_root_path TEXT NOT NULL,
+        normalized_target_root_path TEXT NOT NULL,
+        tool_id TEXT NOT NULL,
+        suite_id TEXT NOT NULL REFERENCES hookhub_suites(suite_id) ON DELETE CASCADE,
+        config_path TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        applied_fingerprint TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, normalized_target_root_path, tool_id)
+      );
     `);
 
     this.ensureProjectSkillTargetsLinkPathKey();
@@ -256,6 +285,9 @@ export class AppDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_project_mcp_bindings_server
         ON project_mcp_bindings(applied_server_id);
+
+      CREATE INDEX IF NOT EXISTS idx_project_hook_bindings_suite
+        ON project_hook_bindings(suite_id);
     `);
 
     this.db.prepare("INSERT OR REPLACE INTO schema_metadata (key, value) VALUES (?, ?)").run("schema_version", "1");
@@ -543,6 +575,161 @@ export class AppDatabase {
 
   deleteMcpHubServer(serverId: string): boolean {
     const result = this.db.prepare("DELETE FROM mcphub_servers WHERE server_id = ?").run(serverId);
+    return Number(result.changes) > 0;
+  }
+
+  listHookHubSuites(query = ""): HookHubSuite[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    return this.db
+      .prepare("SELECT * FROM hookhub_suites ORDER BY name ASC")
+      .all()
+      .map((row) => this.hookHubSuiteFromRow(row))
+      .filter((suite) => {
+        if (!normalizedQuery) return true;
+        return [
+          suite.suiteId,
+          suite.name,
+          suite.description ?? "",
+          suite.riskNotes ?? "",
+          suite.requiredEnv.join(" "),
+          suite.toolIds.join(" ")
+        ]
+          .join("\n")
+          .toLowerCase()
+          .includes(normalizedQuery);
+      });
+  }
+
+  getHookHubSuite(suiteId: string): HookHubSuite | null {
+    const row = this.db.prepare("SELECT * FROM hookhub_suites WHERE suite_id = ?").get(suiteId);
+    return row ? this.hookHubSuiteFromRow(row) : null;
+  }
+
+  getHookHubSuiteByName(name: string): HookHubSuite | null {
+    const row = this.db.prepare("SELECT * FROM hookhub_suites WHERE lower(name) = lower(?)").get(name);
+    return row ? this.hookHubSuiteFromRow(row) : null;
+  }
+
+  upsertHookHubSuite(input: Omit<HookHubSuite, "toolIds" | "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): HookHubSuite {
+    const existing = this.getHookHubSuite(input.suiteId);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO hookhub_suites (
+          suite_id, name, description, risk_notes, required_env_json, payloads_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(suite_id) DO UPDATE SET
+          name = excluded.name,
+          description = excluded.description,
+          risk_notes = excluded.risk_notes,
+          required_env_json = excluded.required_env_json,
+          payloads_json = excluded.payloads_json,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.suiteId,
+        input.name,
+        input.description,
+        input.riskNotes,
+        json(input.requiredEnv),
+        json(input.payloads),
+        createdAt,
+        updatedAt
+      );
+    const suite = this.getHookHubSuite(input.suiteId);
+    if (!suite) throw new Error("Failed to upsert HookHub suite");
+    return suite;
+  }
+
+  deleteHookHubSuite(suiteId: string): boolean {
+    const result = this.db.prepare("DELETE FROM hookhub_suites WHERE suite_id = ?").run(suiteId);
+    return Number(result.changes) > 0;
+  }
+
+  listProjectHookBindings(projectId?: string, targetRootPath?: string): ProjectHookBinding[] {
+    if (projectId && targetRootPath) {
+      return this.db
+        .prepare(
+          `SELECT * FROM project_hook_bindings
+           WHERE project_id = ? AND normalized_target_root_path = ?
+           ORDER BY tool_id ASC`
+        )
+        .all(projectId, normalizeFsPath(targetRootPath))
+        .map((row) => this.projectHookBindingFromRow(row));
+    }
+    if (projectId) {
+      return this.db
+        .prepare("SELECT * FROM project_hook_bindings WHERE project_id = ? ORDER BY normalized_target_root_path ASC, tool_id ASC")
+        .all(projectId)
+        .map((row) => this.projectHookBindingFromRow(row));
+    }
+    return this.db
+      .prepare("SELECT * FROM project_hook_bindings ORDER BY project_id ASC, normalized_target_root_path ASC, tool_id ASC")
+      .all()
+      .map((row) => this.projectHookBindingFromRow(row));
+  }
+
+  listProjectHookBindingsForSuite(suiteId: string): ProjectHookBinding[] {
+    return this.db
+      .prepare("SELECT * FROM project_hook_bindings WHERE suite_id = ? ORDER BY project_id ASC, normalized_target_root_path ASC, tool_id ASC")
+      .all(suiteId)
+      .map((row) => this.projectHookBindingFromRow(row));
+  }
+
+  getProjectHookBinding(projectId: string, targetRootPath: string, toolId: HookHubSupportedToolId): ProjectHookBinding | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM project_hook_bindings
+         WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ?`
+      )
+      .get(projectId, normalizeFsPath(targetRootPath), toolId);
+    return row ? this.projectHookBindingFromRow(row) : null;
+  }
+
+  upsertProjectHookBinding(input: Omit<ProjectHookBinding, "createdAt" | "updatedAt">): ProjectHookBinding {
+    const normalizedTargetRootPath = normalizeFsPath(input.targetRootPath);
+    const existing = this.db
+      .prepare(
+        `SELECT created_at FROM project_hook_bindings
+         WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ?`
+      )
+      .get(input.projectId, normalizedTargetRootPath, input.toolId);
+    const timestamp = nowIso();
+    const createdAt = String(existing?.created_at ?? timestamp);
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO project_hook_bindings (
+          project_id, target_root_path, normalized_target_root_path, tool_id, suite_id,
+          config_path, scope, applied_fingerprint, applied_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.projectId,
+        input.targetRootPath,
+        normalizedTargetRootPath,
+        input.toolId,
+        input.suiteId,
+        input.configPath,
+        input.scope,
+        input.appliedFingerprint,
+        input.appliedAt,
+        createdAt,
+        timestamp
+      );
+    const stored = this.getProjectHookBinding(input.projectId, input.targetRootPath, input.toolId);
+    if (!stored) throw new Error("Failed to upsert project hook binding");
+    return stored;
+  }
+
+  deleteProjectHookBinding(projectId: string, targetRootPath: string, toolId: HookHubSupportedToolId): boolean {
+    const result = this.db
+      .prepare(
+        `DELETE FROM project_hook_bindings
+         WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ?`
+      )
+      .run(projectId, normalizeFsPath(targetRootPath), toolId);
     return Number(result.changes) > 0;
   }
 
@@ -1276,6 +1463,22 @@ export class AppDatabase {
     };
   }
 
+  private hookHubSuiteFromRow(row: Row): HookHubSuite {
+    const payloads = parseJson<Partial<Record<HookHubSupportedToolId, unknown>>>(String(row.payloads_json), {});
+    const toolIds = (Object.keys(payloads) as HookHubSupportedToolId[]).filter((toolId) => isHookHubSupportedToolId(toolId));
+    return {
+      suiteId: String(row.suite_id),
+      name: String(row.name),
+      description: row.description === null ? null : String(row.description),
+      riskNotes: row.risk_notes === null ? null : String(row.risk_notes),
+      requiredEnv: parseJson<string[]>(String(row.required_env_json), []),
+      payloads,
+      toolIds,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
   private projectSkillTargetFromRow(row: Row): ProjectSkillTarget {
     return {
       projectId: String(row.project_id),
@@ -1283,6 +1486,21 @@ export class AppDatabase {
       skillId: String(row.skill_id),
       linkPath: String(row.link_path),
       targetPath: String(row.target_path),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
+  private projectHookBindingFromRow(row: Row): ProjectHookBinding {
+    return {
+      projectId: String(row.project_id),
+      targetRootPath: String(row.target_root_path),
+      toolId: String(row.tool_id) as HookHubSupportedToolId,
+      suiteId: String(row.suite_id),
+      configPath: String(row.config_path),
+      scope: "project",
+      appliedFingerprint: String(row.applied_fingerprint),
+      appliedAt: String(row.applied_at),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
     };
@@ -1430,4 +1648,8 @@ function isSqliteLockedError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const sqliteError = error as Error & { errcode?: unknown; code?: unknown; errstr?: unknown };
   return sqliteError.errcode === 5 || (sqliteError.code === "ERR_SQLITE_ERROR" && sqliteError.errstr === "database is locked");
+}
+
+function isHookHubSupportedToolId(value: string): value is HookHubSupportedToolId {
+  return value === "claude" || value === "codex" || value === "qwen" || value === "qoder";
 }

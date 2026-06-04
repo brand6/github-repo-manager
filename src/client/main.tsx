@@ -4,6 +4,12 @@ import { terminalModes } from "../shared/types.js";
 import type {
   AppConfig,
   BootstrapState,
+  HookHubApplyMode,
+  HookHubExportDocument,
+  HookHubImportConflictMode,
+  HookHubList,
+  HookHubSuiteInput,
+  HookHubSupportedToolId,
   McpHubImportResult,
   McpHubList,
   McpHubTargetToolId,
@@ -11,6 +17,7 @@ import type {
   Project,
   ProjectDetail,
   ProjectDetailGroup,
+  ProjectHookState,
   ProjectLocalMcpMigrationMode,
   ProjectLocalSkillMigrationMode,
   ProjectLocalSkillMigrationResult,
@@ -23,6 +30,9 @@ import type {
   ProjectSkillUpdateResult,
   ProjectToolTarget,
   RefreshMode,
+  RuleCreatePreview,
+  RuleCreateSource,
+  RuleFileName,
   RuleSyncDirection,
   RuleSyncStatus,
   ScanCandidate,
@@ -36,6 +46,7 @@ import type {
   ToolStatus
 } from "../shared/types.js";
 import { client } from "./api.js";
+import { HookHubPage, ProjectHooksPanel } from "./hookhubViews.js";
 import { McpHubPage, ProjectMcpPanel } from "./mcphubViews.js";
 import { ProjectSkillsPanel, SkillHubPage } from "./skillhubViews.js";
 import "./styles.css";
@@ -75,12 +86,14 @@ function App() {
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
-  const [view, setView] = useState<"home" | "skillhub" | "mcphub">("home");
+  const [view, setView] = useState<"home" | "skillhub" | "mcphub" | "hookhub">("home");
   const [skillHub, setSkillHub] = useState<SkillHubList | null>(null);
   const [skillHubQuery, setSkillHubQuery] = useState("");
   const [skillHubUpdates, setSkillHubUpdates] = useState<SkillHubUpdateCheckResult | null>(null);
   const [mcpHub, setMcpHub] = useState<McpHubList | null>(null);
   const [lastMcpHubImport, setLastMcpHubImport] = useState<McpHubImportResult | null>(null);
+  const [hookHub, setHookHub] = useState<HookHubList | null>(null);
+  const [hookHubQuery, setHookHubQuery] = useState("");
   const [projectSkillPanelOpen, setProjectSkillPanelOpen] = useState(false);
   const [projectSkillState, setProjectSkillState] = useState<ProjectSkillTargetsState | null>(null);
   const [projectSkillTargetRoot, setProjectSkillTargetRoot] = useState<string | null>(null);
@@ -91,8 +104,16 @@ function App() {
   const [projectMcpState, setProjectMcpState] = useState<ProjectMcpState | null>(null);
   const [projectMcpTargetRoot, setProjectMcpTargetRoot] = useState<string | null>(null);
   const [lastProjectMcpApply, setLastProjectMcpApply] = useState<ProjectMcpApplyResult | null>(null);
+  const [projectHooksPanelOpen, setProjectHooksPanelOpen] = useState(false);
+  const [projectHookState, setProjectHookState] = useState<ProjectHookState | null>(null);
+  const [projectHookTargetRoot, setProjectHookTargetRoot] = useState<string | null>(null);
   const [ruleSyncStatus, setRuleSyncStatus] = useState<RuleSyncStatus | null>(null);
   const [pendingRuleSyncDirection, setPendingRuleSyncDirection] = useState<RuleSyncDirection | null>(null);
+  const [pendingRuleCreateFile, setPendingRuleCreateFile] = useState<RuleFileName | null>(null);
+  const [ruleCreateSource, setRuleCreateSource] = useState<RuleCreateSource>("template");
+  const [ruleCreatePreview, setRuleCreatePreview] = useState<RuleCreatePreview | null>(null);
+  const [ruleCreateContent, setRuleCreateContent] = useState("");
+  const [ruleCreateLoading, setRuleCreateLoading] = useState(false);
   const selectedProjectIdRef = useRef<string | null>(null);
   const queryRef = useRef("");
   const selectedDriveRootRef = useRef("");
@@ -168,6 +189,11 @@ function App() {
     void loadMcpHub();
   }, [view, bootstrap?.initialized]);
 
+  useEffect(() => {
+    if (view !== "hookhub" || !bootstrap?.initialized) return;
+    void loadHookHub(hookHubQuery);
+  }, [view, hookHubQuery, bootstrap?.initialized]);
+
   async function initialize() {
     const state = await client.bootstrap();
     setBootstrap(state);
@@ -195,6 +221,10 @@ function App() {
 
   async function loadMcpHub() {
     setMcpHub(await client.mcphub());
+  }
+
+  async function loadHookHub(search = hookHubQuery) {
+    setHookHub(await client.hookhub(search));
   }
 
   async function loadDetail(projectId: string, search: string) {
@@ -287,8 +317,12 @@ function App() {
     setProjectMcpState(null);
     setProjectMcpTargetRoot(null);
     setLastProjectMcpApply(null);
+    setProjectHooksPanelOpen(false);
+    setProjectHookState(null);
+    setProjectHookTargetRoot(null);
     setRuleSyncStatus(null);
     setPendingRuleSyncDirection(null);
+    resetRuleCreateDialog();
   }
 
   function returnHome() {
@@ -322,11 +356,21 @@ function App() {
     void loadMcpHub();
   }
 
+  function openHookHub() {
+    setSelectedProjectId(null);
+    setMessage("");
+    clearProjectViewState();
+    setView("hookhub");
+    void loadHookHub();
+  }
+
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const totalSessions = projects.reduce((sum, project) => sum + project.sessionCount, 0);
   const showingSkillHub = view === "skillhub" && !selectedProject;
   const showingMcpHub = view === "mcphub" && !selectedProject;
-  const projectActions = selectedProject || showingSkillHub || showingMcpHub ? null : (
+  const showingHookHub = view === "hookhub" && !selectedProject;
+  const showingHub = showingSkillHub || showingMcpHub || showingHookHub;
+  const projectActions = selectedProject || showingHub ? null : (
     <div className="home-actions topbar-home-actions" aria-label="项目操作">
       <button className="primary" type="button" disabled={busy} onClick={() => setNewProjectDialogOpen(true)}>
         新建项目
@@ -385,6 +429,9 @@ function App() {
         <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
           McpHub
         </button>
+        <button className={`topbar-link${view === "hookhub" ? " active" : ""}`} type="button" onClick={openHookHub}>
+          HookHub
+        </button>
         {selectedProject ? (
           <div className="topbar-project-context">
             <button className="secondary" type="button" onClick={returnHome}>
@@ -402,13 +449,13 @@ function App() {
               </label>
             </div>
           </div>
-        ) : showingSkillHub || showingMcpHub ? (
+        ) : showingHub ? (
           <div className="topbar-project-context">
             <button className="secondary" type="button" onClick={returnHome}>
               返回
             </button>
             <div className="topbar-project-title">
-              <h1>{showingSkillHub ? "SkillHub" : "McpHub"}</h1>
+              <h1>{showingSkillHub ? "SkillHub" : showingMcpHub ? "McpHub" : "HookHub"}</h1>
             </div>
           </div>
         ) : (
@@ -425,7 +472,7 @@ function App() {
             <button className="secondary" type="button" onClick={() => void runAction(checkSkillHubUpdates)} disabled={busy}>
               检查更新
             </button>
-          ) : !selectedProject && !showingMcpHub ? (
+          ) : !selectedProject && !showingMcpHub && !showingHookHub ? (
             <button className="secondary" type="button" onClick={() => setRefreshDialogOpen(true)} disabled={busy}>
               刷新索引
             </button>
@@ -492,6 +539,21 @@ function App() {
         />
       ) : null}
 
+      {pendingRuleCreateFile && ruleSyncStatus ? (
+        <RuleCreateDialog
+          status={ruleSyncStatus}
+          targetFile={pendingRuleCreateFile}
+          source={ruleCreateSource}
+          preview={ruleCreatePreview}
+          content={ruleCreateContent}
+          busy={busy || ruleCreateLoading}
+          onCancel={resetRuleCreateDialog}
+          onSourceChange={(source) => void runAction(() => loadRuleCreatePreview(pendingRuleCreateFile, source))}
+          onContentChange={setRuleCreateContent}
+          onConfirm={() => void runAction(createRuleFileFromDraft)}
+        />
+      ) : null}
+
       {projectSkillPanelOpen ? (
         <ProjectSkillsPanel
           skillState={projectSkillState}
@@ -511,9 +573,22 @@ function App() {
           busy={busy}
           lastApply={lastProjectMcpApply}
           onClose={() => setProjectMcpPanelOpen(false)}
-          onApply={(serverId, toolId) => void runAction(() => applyProjectMcp(serverId, toolId))}
-          onDisable={(serverId, toolId) => void runAction(() => disableProjectMcp(serverId, toolId))}
+          onUpdateServerTools={(serverId, toolIds) => void runAction(() => saveProjectMcpServerTargets(serverId, toolIds))}
           onMigrate={(serverId) => void runAction(() => migrateProjectLocalMcp(serverId))}
+        />
+      ) : null}
+
+      {projectHooksPanelOpen ? (
+        <ProjectHooksPanel
+          state={projectHookState}
+          busy={busy}
+          onClose={() => setProjectHooksPanelOpen(false)}
+          onWriteHooks={(toolId, hooks, input) => void runAction(() => writeProjectHooks(toolId, hooks, input))}
+          onShareHooks={(toolId, input) => void runAction(() => shareProjectHooks(toolId, input))}
+          onApplySuite={(toolId, suiteId, options) => void runAction(() => applyHookHubSuite(toolId, suiteId, options))}
+          onSyncTool={(toolId) => void runAction(() => syncProjectHookTool(toolId))}
+          onRemoveBinding={(toolId) => void runAction(() => removeProjectHookBinding(toolId))}
+          onSyncAll={() => void runAction(syncProjectHooks)}
         />
       ) : null}
 
@@ -545,6 +620,20 @@ function App() {
           onImportJson={(input) => void runAction(() => importMcpHubJson(input))}
           onDeleteServer={(serverId) => void runAction(() => deleteMcpHubServer(serverId))}
         />
+      ) : showingHookHub ? (
+        <HookHubPage
+          hookhub={hookHub}
+          query={hookHubQuery}
+          busy={busy}
+          onQueryChange={setHookHubQuery}
+          onCreateSuite={(input) => void runAction(() => createHookHubSuite(input))}
+          onUpdateSuite={(suiteId, input) => void runAction(() => updateHookHubSuite(suiteId, input))}
+          onDeleteSuite={(suiteId) => void runAction(() => deleteHookHubSuite(suiteId))}
+          onExportSuite={(suiteId) => exportHookHubSuite(suiteId)}
+          onImportSuite={(input, mode, renameName) => void runAction(() => importHookHubSuite(input, mode, renameName))}
+          onImportNative={(toolId, input, suite) => void runAction(() => importNativeHooks(toolId, input, suite))}
+          onSyncSuite={(suiteId) => void runAction(() => syncHookHubSuite(suiteId))}
+        />
       ) : selectedProject ? (
         <ProjectDetailView
           project={selectedProject}
@@ -566,8 +655,11 @@ function App() {
           onUpdateProjectTools={(toolIds) => void runAction(() => saveProjectToolTargets(toolIds))}
           onRefreshRuleSync={() => void runAction(() => refreshRuleSyncStatus())}
           onApplyRuleSync={(direction) => setPendingRuleSyncDirection(direction)}
+          onCreateRuleFile={(file) => void runAction(() => openRuleCreateDialog(file))}
+          onOpenRuleFile={(file) => void runAction(() => openRuleFile(file))}
           onOpenProjectSkills={(targetRootPath) => void runAction(() => openProjectSkillPanel(selectedProject.id, targetRootPath))}
           onOpenProjectMcp={(targetRootPath) => void runAction(() => openProjectMcpPanel(selectedProject.id, targetRootPath))}
+          onOpenProjectHooks={(targetRootPath) => void runAction(() => openProjectHooksPanel(selectedProject.id, targetRootPath))}
         />
       ) : (
         <HomePage
@@ -862,11 +954,80 @@ function App() {
     setMessage(`MCP server 已删除：清理 ${result.modifiedFiles.length} 个文件，跳过 ${result.skippedMissingFiles.length} 个缺失文件，失败 ${result.failures.length} 个`);
   }
 
+  async function createHookHubSuite(input: HookHubSuiteInput) {
+    await client.createHookHubSuite(input);
+    await loadHookHub();
+    if (projectHooksPanelOpen) await refreshProjectHooksPanel();
+    setMessage("HookHub suite 已创建");
+  }
+
+  async function updateHookHubSuite(suiteId: string, input: HookHubSuiteInput) {
+    await client.updateHookHubSuite(suiteId, input);
+    await loadHookHub();
+    if (projectHooksPanelOpen) await refreshProjectHooksPanel();
+    setMessage("HookHub suite 已更新");
+  }
+
+  async function deleteHookHubSuite(suiteId: string) {
+    const confirmed = window.confirm("确定删除这个 HookHub suite？项目文件不会被删除，但相关 binding 会移除。");
+    if (!confirmed) {
+      setMessage("已取消删除 HookHub suite");
+      return;
+    }
+    const result = await client.deleteHookHubSuite(suiteId);
+    await loadHookHub();
+    if (projectHooksPanelOpen) await refreshProjectHooksPanel();
+    setMessage(result.deleted ? "HookHub suite 已删除" : "HookHub suite 不存在");
+  }
+
+  async function exportHookHubSuite(suiteId: string): Promise<HookHubExportDocument> {
+    const document = await client.exportHookHubSuite(suiteId);
+    setMessage("HookHub suite 已导出");
+    return document;
+  }
+
+  async function importHookHubSuite(input: string, mode?: HookHubImportConflictMode | null, renameName?: string | null) {
+    let result = await client.importHookHubSuite(input, mode, renameName);
+    if (result.action === "needs-confirmation" && result.conflict) {
+      const choice = window.prompt(`HookHub 已有同名 suite「${result.conflict.name}」：输入 1 覆盖，2 重命名导入，3 取消`, "3");
+      if (choice === "1") {
+        result = await client.importHookHubSuite(input, "overwrite");
+      } else if (choice === "2") {
+        const nextName = window.prompt("重命名后的 suite name", `${result.conflict.name} copy`);
+        if (!nextName) {
+          setMessage("已取消导入 HookHub suite");
+          return;
+        }
+        result = await client.importHookHubSuite(input, "rename", nextName);
+      } else {
+        setMessage("已取消导入 HookHub suite");
+        return;
+      }
+    }
+    await loadHookHub();
+    setMessage(`HookHub suite 导入完成：${result.action}`);
+  }
+
+  async function importNativeHooks(toolId: HookHubSupportedToolId, input: string, suite: HookHubSuiteInput) {
+    await client.importNativeHooks(toolId, input, suite);
+    await loadHookHub();
+    setMessage("原生 hooks 已导入为 HookHub suite");
+  }
+
+  async function syncHookHubSuite(suiteId: string) {
+    const result = await client.syncHookHubSuite(suiteId);
+    await loadHookHub();
+    if (projectHooksPanelOpen) await refreshProjectHooksPanel();
+    setMessage(`HookHub 同步完成：更新 ${result.updated.length} 个，跳过 ${result.skipped.length} 个`);
+  }
+
   async function openProjectSkillPanel(projectId: string, targetRootPath: string) {
     setProjectSkillPanelOpen(true);
     setProjectSkillTargetRoot(targetRootPath);
     setProjectLocalSkillTargetRoot(targetRootPath);
     setLastProjectSkillResult(null);
+    setProjectSkillState(null);
+    setProjectLocalSkillState(null);
     const [skillTargets, localSkills] = await Promise.all([
       client.projectSkillTargets(projectId, targetRootPath),
       client.projectLocalSkills(projectId, targetRootPath)
@@ -882,22 +1043,108 @@ function App() {
     setProjectMcpState(await client.projectMcp(projectId, targetRootPath));
   }
 
-  async function applyProjectMcp(serverId: string, toolId: McpHubTargetToolId) {
-    if (!selectedProjectId) return;
-    const targetRootPath = projectMcpTargetRoot ?? undefined;
-    const result = await client.applyProjectMcp(selectedProjectId, serverId, toolId, targetRootPath);
-    setLastProjectMcpApply(result);
-    setProjectMcpState(await client.projectMcp(selectedProjectId, targetRootPath));
-    setMessage(result.warnings.length ? `MCP 已应用，但有 ${result.warnings.length} 个环境变量警告` : "MCP 已应用到项目");
+  async function openProjectHooksPanel(projectId: string, targetRootPath: string) {
+    setProjectHooksPanelOpen(true);
+    setProjectHookTargetRoot(targetRootPath);
+    setProjectHookState(await client.projectHooks(projectId, targetRootPath));
   }
 
-  async function disableProjectMcp(serverId: string, toolId: McpHubTargetToolId) {
+  async function refreshProjectHooksPanel() {
+    if (!selectedProjectId) return;
+    setProjectHookState(await client.projectHooks(selectedProjectId, projectHookTargetRoot ?? undefined));
+  }
+
+  async function writeProjectHooks(toolId: HookHubSupportedToolId, hooks: unknown, input: Partial<HookHubSuiteInput> = {}) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectHookTargetRoot ?? undefined;
+    await client.writeProjectHooks(selectedProjectId, toolId, hooks, input, targetRootPath);
+    await Promise.all([refreshProjectHooksPanel(), loadHookHub()]);
+    setMessage(input.name ? "项目 hooks 已创建 suite 并应用" : "项目 hooks 已保存");
+  }
+
+  async function shareProjectHooks(toolId: HookHubSupportedToolId, input: HookHubSuiteInput) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectHookTargetRoot ?? undefined;
+    await client.shareProjectHooks(selectedProjectId, toolId, input, targetRootPath);
+    await Promise.all([refreshProjectHooksPanel(), loadHookHub()]);
+    setMessage("项目 hooks 已上传到 HookHub");
+  }
+
+  async function applyHookHubSuite(
+    toolId: HookHubSupportedToolId,
+    suiteId: string,
+    options: { mode?: HookHubApplyMode | null; preserveName?: string | null } = {}
+  ) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectHookTargetRoot ?? undefined;
+    const result = await client.applyHookHubSuite(selectedProjectId, toolId, suiteId, targetRootPath, options);
+    await refreshProjectHooksPanel();
+    await loadHookHub();
+    setMessage(result.warnings.length ? `HookHub suite 已应用：${result.warnings.join("；")}` : "HookHub suite 已应用");
+  }
+
+  async function syncProjectHookTool(toolId: HookHubSupportedToolId) {
+    if (!selectedProjectId) return;
+    await client.syncProjectHookTool(selectedProjectId, toolId, projectHookTargetRoot ?? undefined);
+    await refreshProjectHooksPanel();
+    setMessage("项目 hooks 已从 HookHub 同步");
+  }
+
+  async function removeProjectHookBinding(toolId: HookHubSupportedToolId) {
+    if (!selectedProjectId) return;
+    await client.removeProjectHookBinding(selectedProjectId, toolId, projectHookTargetRoot ?? undefined);
+    await refreshProjectHooksPanel();
+    setMessage("HookHub binding 已移除");
+  }
+
+  async function syncProjectHooks() {
+    if (!selectedProjectId) return;
+    const result = await client.syncProjectHooks(selectedProjectId, projectHookTargetRoot ?? undefined);
+    await refreshProjectHooksPanel();
+    setMessage(`项目 hooks 同步完成：更新 ${result.updated.length} 个，跳过 ${result.skipped.length} 个`);
+  }
+
+  async function saveProjectMcpServerTargets(serverId: string, toolIds: McpHubTargetToolId[]) {
     if (!selectedProjectId) return;
     const targetRootPath = projectMcpTargetRoot ?? undefined;
-    const result = await client.disableProjectMcp(selectedProjectId, serverId, toolId, targetRootPath);
-    setLastProjectMcpApply(null);
+    const supportedToolIds = new Set((projectMcpState?.targets ?? []).filter((target) => target.enabled && target.supported).map((target) => target.toolId));
+    const requestedToolIds = uniqueMcpTargetToolIds(toolIds.filter((toolId) => supportedToolIds.has(toolId)));
+    const currentToolIds = uniqueMcpTargetToolIds(
+      (projectMcpState?.bindings ?? []).filter((binding) => binding.serverId === serverId).map((binding) => binding.toolId)
+    );
+    const requested = new Set(requestedToolIds);
+    const current = new Set(currentToolIds);
+    const applyToolIds = requestedToolIds.filter((toolId) => !current.has(toolId));
+    const disableToolIds = currentToolIds.filter((toolId) => !requested.has(toolId));
+    let lastApplyResult: ProjectMcpApplyResult | null = null;
+    let warningCount = 0;
+
+    for (const toolId of applyToolIds) {
+      const result = await client.applyProjectMcp(selectedProjectId, serverId, toolId, targetRootPath);
+      lastApplyResult = result;
+      warningCount += result.warnings.length;
+    }
+
+    for (const toolId of disableToolIds) {
+      await client.disableProjectMcp(selectedProjectId, serverId, toolId, targetRootPath);
+    }
+
+    setLastProjectMcpApply(lastApplyResult);
     setProjectMcpState(await client.projectMcp(selectedProjectId, targetRootPath));
-    setMessage(result.modified ? "MCP 已从项目配置移除" : result.reason ?? "MCP 绑定已取消");
+
+    if (applyToolIds.length && disableToolIds.length) {
+      setMessage(`MCP 工具选择已更新：添加 ${applyToolIds.length} 个，移除 ${disableToolIds.length} 个`);
+    } else if (applyToolIds.length) {
+      if (warningCount) {
+        setMessage(applyToolIds.length === 1 ? `MCP 已应用，但有 ${warningCount} 个环境变量警告` : `MCP 已应用到 ${applyToolIds.length} 个工具，但有 ${warningCount} 个环境变量警告`);
+      } else {
+        setMessage(applyToolIds.length === 1 ? "MCP 已应用到项目" : `MCP 已应用到 ${applyToolIds.length} 个工具`);
+      }
+    } else if (disableToolIds.length) {
+      setMessage(disableToolIds.length === 1 ? "MCP 已从项目配置移除" : `MCP 已从 ${disableToolIds.length} 个工具配置移除`);
+    } else {
+      setMessage("MCP 工具选择未变化");
+    }
   }
 
   async function migrateProjectLocalMcp(serverId: string) {
@@ -1011,6 +1258,9 @@ function App() {
     if (projectMcpPanelOpen) {
       setProjectMcpState(await client.projectMcp(selectedProjectId, projectMcpTargetRoot ?? undefined));
     }
+    if (projectHooksPanelOpen) {
+      setProjectHookState(await client.projectHooks(selectedProjectId, projectHookTargetRoot ?? undefined));
+    }
     setMessage("项目使用工具已更新");
   }
 
@@ -1040,6 +1290,50 @@ function App() {
     const status = await client.ruleSyncStatus(selectedProjectId);
     setRuleSyncStatus(status);
     setMessage("规则文件状态已刷新");
+  }
+
+  async function openRuleCreateDialog(file: RuleFileName) {
+    if (!selectedProjectId || !ruleSyncStatus) return;
+    const source = defaultRuleCreateSource(ruleSyncStatus, file);
+    setPendingRuleCreateFile(file);
+    setRuleCreateSource(source);
+    setRuleCreatePreview(null);
+    setRuleCreateContent("");
+    await loadRuleCreatePreview(file, source);
+  }
+
+  async function loadRuleCreatePreview(file: RuleFileName, source: RuleCreateSource) {
+    if (!selectedProjectId) return;
+    setRuleCreateLoading(true);
+    try {
+      const preview = await client.prepareRuleFileCreate(selectedProjectId, file, source);
+      setRuleCreateSource(source);
+      setRuleCreatePreview(preview);
+      setRuleCreateContent(preview.content);
+    } finally {
+      setRuleCreateLoading(false);
+    }
+  }
+
+  async function createRuleFileFromDraft() {
+    if (!selectedProjectId || !pendingRuleCreateFile) return;
+    const result = await client.createRuleFile(selectedProjectId, pendingRuleCreateFile, ruleCreateContent);
+    setRuleSyncStatus(result.status);
+    resetRuleCreateDialog();
+    setMessage(result.message);
+  }
+
+  function resetRuleCreateDialog() {
+    setPendingRuleCreateFile(null);
+    setRuleCreatePreview(null);
+    setRuleCreateContent("");
+    setRuleCreateLoading(false);
+  }
+
+  async function openRuleFile(file: RuleFileName) {
+    if (!selectedProjectId) return;
+    await client.openRuleFile(selectedProjectId, file);
+    setMessage(`已打开 ${file}`);
   }
 
   async function applyRuleSyncDirection(direction: RuleSyncDirection, confirmedStatus: RuleSyncStatus | null = ruleSyncStatus) {
@@ -1745,6 +2039,96 @@ function RuleSyncConfirmDialog({
   );
 }
 
+function RuleCreateDialog({
+  status,
+  targetFile,
+  source,
+  preview,
+  content,
+  busy,
+  onCancel,
+  onSourceChange,
+  onContentChange,
+  onConfirm
+}: {
+  status: RuleSyncStatus;
+  targetFile: RuleFileName;
+  source: RuleCreateSource;
+  preview: RuleCreatePreview | null;
+  content: string;
+  busy: boolean;
+  onCancel: () => void;
+  onSourceChange: (source: RuleCreateSource) => void;
+  onContentChange: (content: string) => void;
+  onConfirm: () => void;
+}) {
+  const sourceFile = oppositeRuleFileName(targetFile);
+  const syncAvailable = status.files[sourceFile].exists;
+  const canConfirm = Boolean(preview) && content.trim().length > 0 && !busy;
+
+  return (
+    <div className="settings-backdrop" role="presentation">
+      <section className="settings-dialog rule-create-dialog" role="dialog" aria-modal="true" aria-labelledby="rule-create-title">
+        <header>
+          <div>
+            <span className="eyebrow">创建规则文件</span>
+            <h2 id="rule-create-title">创建{targetFile}</h2>
+          </div>
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+        </header>
+
+        <div className="rule-create-source-options" role="radiogroup" aria-label="创建方式">
+          <label className={`rule-create-source-option${source === "sync" ? " active" : ""}${!syncAvailable ? " disabled" : ""}`}>
+            <input
+              type="radio"
+              name="rule-create-source"
+              value="sync"
+              checked={source === "sync"}
+              disabled={busy || !syncAvailable}
+              onChange={() => onSourceChange("sync")}
+            />
+            <span>从{sourceFile}同步</span>
+            <small>{syncAvailable ? "复制现有规则内容" : `${sourceFile} 不存在`}</small>
+          </label>
+          <label className={`rule-create-source-option${source === "template" ? " active" : ""}`}>
+            <input
+              type="radio"
+              name="rule-create-source"
+              value="template"
+              checked={source === "template"}
+              disabled={busy}
+              onChange={() => onSourceChange("template")}
+            />
+            <span>默认模板</span>
+            <small>使用内置规则模板作为初稿</small>
+          </label>
+        </div>
+
+        <label className="rule-create-preview">
+          <span className="field-label">预览和编辑</span>
+          <textarea
+            value={content}
+            aria-label={`${targetFile} 预览内容`}
+            spellCheck={false}
+            disabled={busy || !preview}
+            onChange={(event) => onContentChange(event.target.value)}
+          />
+        </label>
+
+        {preview ? <p className="muted compact">{preview.message}</p> : <p className="muted compact">正在生成预览...</p>}
+
+        <div className="settings-actions">
+          <button className="primary" type="button" onClick={onConfirm} disabled={!canConfirm}>
+            创建
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ProjectDetailView({
   project,
   detail,
@@ -1765,8 +2149,11 @@ function ProjectDetailView({
   onUpdateProjectTools = () => {},
   onRefreshRuleSync = () => {},
   onApplyRuleSync = () => {},
+  onCreateRuleFile = () => {},
+  onOpenRuleFile = () => {},
   onOpenProjectSkills = () => {},
-  onOpenProjectMcp = () => {}
+  onOpenProjectMcp = () => {},
+  onOpenProjectHooks = () => {}
 }: {
   project: Project;
   detail: ProjectDetail | null;
@@ -1787,8 +2174,11 @@ function ProjectDetailView({
   onUpdateProjectTools?: (toolIds: ToolId[]) => void;
   onRefreshRuleSync?: () => void;
   onApplyRuleSync?: (direction: RuleSyncDirection) => void;
+  onCreateRuleFile?: (file: RuleFileName) => void;
+  onOpenRuleFile?: (file: RuleFileName) => void;
   onOpenProjectSkills?: (targetRootPath: string) => void;
   onOpenProjectMcp?: (targetRootPath: string) => void;
+  onOpenProjectHooks?: (targetRootPath: string) => void;
 }) {
   const toolMap = useMemo(() => new Map(tools.map((tool) => [tool.toolId, tool])), [tools]);
   const projectTools = useMemo(() => tools.filter(isLaunchableProjectTool), [tools]);
@@ -1809,6 +2199,8 @@ function ProjectDetailView({
           busy={busy}
           onRefresh={onRefreshRuleSync}
           onApply={onApplyRuleSync}
+          onCreateFile={onCreateRuleFile}
+          onOpenFile={onOpenRuleFile}
         />
         <div className="toolbar detail-controls-toolbar">
           <label className="field wide detail-filter">
@@ -1850,6 +2242,7 @@ function ProjectDetailView({
           onDeleteSession={onDeleteSession}
           onOpenProjectSkills={onOpenProjectSkills}
           onOpenProjectMcp={onOpenProjectMcp}
+          onOpenProjectHooks={onOpenProjectHooks}
         />
       ))}
 
@@ -2020,47 +2413,66 @@ function ProjectRuleSyncPanel({
   status,
   busy,
   onRefresh,
-  onApply
+  onApply,
+  onCreateFile,
+  onOpenFile
 }: {
   status: RuleSyncStatus | null;
   busy: boolean;
   onRefresh: () => void;
   onApply: (direction: RuleSyncDirection) => void;
+  onCreateFile: (file: RuleFileName) => void;
+  onOpenFile: (file: RuleFileName) => void;
 }) {
   const agentsFile = status?.files["AGENTS.md"] ?? null;
   const claudeFile = status?.files["CLAUDE.md"] ?? null;
   const agentsToClaude = status?.directions["agents-to-claude"];
   const claudeToAgents = status?.directions["claude-to-agents"];
+  const hasRules = Boolean(agentsFile?.exists || claudeFile?.exists);
 
   return (
     <section className="project-rule-sync" aria-label="规则同步">
       <div className="rule-sync-header">
         <span className="field-label">规则同步</span>
-        <button className="secondary" type="button" disabled={busy} onClick={onRefresh}>
-          刷新规则
-        </button>
+        <div className="rule-sync-header-actions">
+          <button className="secondary" type="button" disabled={busy} onClick={onRefresh}>
+            刷新规则
+          </button>
+        </div>
       </div>
       {status ? (
-        <div className="rule-sync-file-list">
-          {agentsFile ? (
-            <RuleFileRow
-              file={agentsFile}
-              busy={busy}
-              direction="claude-to-agents"
-              directionStatus={claudeToAgents}
-              onApply={onApply}
-            />
+        <>
+          {!hasRules ? (
+            <div className="empty-state compact rule-sync-empty">
+              <h3>未发现规则文件</h3>
+              <p>可在 CLAUDE.md 行右侧创建模板作为项目规则入口。</p>
+            </div>
           ) : null}
-          {claudeFile ? (
-            <RuleFileRow
-              file={claudeFile}
-              busy={busy}
-              direction="agents-to-claude"
-              directionStatus={agentsToClaude}
-              onApply={onApply}
-            />
-          ) : null}
-        </div>
+          <div className="rule-sync-file-list">
+            {agentsFile ? (
+              <RuleFileRow
+                file={agentsFile}
+                busy={busy}
+                direction="claude-to-agents"
+                directionStatus={claudeToAgents}
+                onApply={onApply}
+                onOpenFile={onOpenFile}
+                onCreateFile={onCreateFile}
+              />
+            ) : null}
+            {claudeFile ? (
+              <RuleFileRow
+                file={claudeFile}
+                busy={busy}
+                direction="agents-to-claude"
+                directionStatus={agentsToClaude}
+                onApply={onApply}
+                onOpenFile={onOpenFile}
+                onCreateFile={onCreateFile}
+              />
+            ) : null}
+          </div>
+        </>
       ) : (
         <span className="muted compact">正在读取规则文件状态...</span>
       )}
@@ -2073,28 +2485,44 @@ function RuleFileRow({
   busy,
   direction,
   directionStatus,
-  onApply
+  onApply,
+  onOpenFile,
+  onCreateFile
 }: {
   file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]];
   busy: boolean;
   direction: RuleSyncDirection;
   directionStatus: RuleSyncStatus["directions"][RuleSyncDirection] | undefined;
   onApply: (direction: RuleSyncDirection) => void;
+  onOpenFile: (file: RuleFileName) => void;
+  onCreateFile: (file: RuleFileName) => void;
 }) {
   return (
     <article className="rule-file-row" aria-label={`${file.file} 规则文件`}>
       <RuleFileStatus file={file} />
       <div className="rule-file-row-actions">
         {file.exists && file.mtime ? <time dateTime={file.mtime}>{formatTime(file.mtime)}</time> : null}
-        <button
-          className="secondary"
-          type="button"
-          disabled={busy || !directionStatus?.enabled}
-          title={directionStatus?.reason ?? undefined}
-          onClick={() => onApply(direction)}
-        >
-          同步
-        </button>
+        {file.exists ? (
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenFile(file.file)}>
+            查看
+          </button>
+        ) : null}
+        {!file.exists ? (
+          <button className="primary" type="button" disabled={busy} onClick={() => onCreateFile(file.file)}>
+            创建
+          </button>
+        ) : null}
+        {file.exists && directionStatus?.enabled ? (
+          <button
+            className="secondary"
+            type="button"
+            disabled={busy}
+            title={directionStatus.reason ?? undefined}
+            onClick={() => onApply(direction)}
+          >
+            {file.exists ? "同步" : "创建"}
+          </button>
+        ) : null}
       </div>
     </article>
   );
@@ -2121,6 +2549,14 @@ function ruleSyncFileNames(direction: RuleSyncDirection): { sourceFile: "AGENTS.
     : { sourceFile: "CLAUDE.md", targetFile: "AGENTS.md" };
 }
 
+function defaultRuleCreateSource(status: RuleSyncStatus, file: RuleFileName): RuleCreateSource {
+  return status.files[oppositeRuleFileName(file)].exists ? "sync" : "template";
+}
+
+function oppositeRuleFileName(file: RuleFileName): RuleFileName {
+  return file === "CLAUDE.md" ? "AGENTS.md" : "CLAUDE.md";
+}
+
 function ruleSyncProtectionNote(status: RuleSyncStatus, target: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]): string {
   if (!target.exists) return "目标文件当前缺失，确认后会创建目标文件。";
   if (status.gitRoot && target.gitManaged && target.dirty) return "目标文件有未提交内容；可以先 commit 备份，也可以直接同步覆盖。";
@@ -2141,6 +2577,10 @@ function uniqueToolIds(toolIds: ToolId[]): ToolId[] {
   return Array.from(new Set(toolIds));
 }
 
+function uniqueMcpTargetToolIds(toolIds: McpHubTargetToolId[]): McpHubTargetToolId[] {
+  return Array.from(new Set(toolIds));
+}
+
 function isLaunchableProjectTool(tool: ToolStatus): boolean {
   return tool.visibleInProjectUi && tool.supported && tool.available;
 }
@@ -2154,7 +2594,8 @@ function SessionGroup({
   onResume,
   onDeleteSession,
   onOpenProjectSkills,
-  onOpenProjectMcp
+  onOpenProjectMcp,
+  onOpenProjectHooks
 }: {
   group: ProjectDetailGroup;
   tools: ToolStatus[];
@@ -2165,6 +2606,7 @@ function SessionGroup({
   onDeleteSession: (sessionId: string) => void;
   onOpenProjectSkills: (targetRootPath: string) => void;
   onOpenProjectMcp: (targetRootPath: string) => void;
+  onOpenProjectHooks: (targetRootPath: string) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -2183,6 +2625,9 @@ function SessionGroup({
           </button>
           <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectMcp(group.fullPath)}>
             MCP
+          </button>
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectHooks(group.fullPath)}>
+            Hooks
           </button>
           <button className="primary" type="button" onClick={() => setPickerOpen((open) => !open)}>
             新会话

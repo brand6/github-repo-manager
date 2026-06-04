@@ -22,9 +22,20 @@ describe("SkillHub API", () => {
     context = new AppContext(directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
-    const empty = await request(app).get("/api/skillhub").set("x-local-api-token", context.token).expect(200);
-    expect(empty.body.config.rootDir).toBe(path.join(directory, "skillhub"));
-    expect(empty.body.skills).toEqual([]);
+    const defaults = await request(app).get("/api/skillhub").set("x-local-api-token", context.token).expect(200);
+    expect(defaults.body.config.rootDir).toBe(path.join(directory, "skillhub"));
+    expect(defaults.body.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "mattpocock-skills", type: "github", label: "mattpocock/skills" }),
+        expect.objectContaining({ id: "skills", type: "local", label: "skills" })
+      ])
+    );
+    expect(defaults.body.skills).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ folderName: "tdd", sourceId: "mattpocock-skills" }),
+        expect.objectContaining({ folderName: "unity-mcp-skill", sourceId: "skills" })
+      ])
+    );
 
     const nextRoot = path.join(directory, "custom-skillhub");
     const updated = await request(app)
@@ -48,8 +59,9 @@ describe("SkillHub API", () => {
     expect(fs.existsSync(path.join(nextRoot, "library", "skills", "review", "SKILL.md"))).toBe(true);
 
     const listed = await request(app).get("/api/skillhub").set("x-local-api-token", context.token).expect(200);
-    expect(listed.body.sources).toEqual([expect.objectContaining({ id: "skills", label: "skills", type: "local" })]);
-    expect(listed.body.skills[0].source).toMatchObject({ id: "skills", label: "skills", type: "local" });
+    expect(listed.body.sources).toEqual(expect.arrayContaining([expect.objectContaining({ id: "skills", label: "skills", type: "local" })]));
+    const review = listed.body.skills.find((skill: { folderName: string }) => skill.folderName === "review");
+    expect(review?.source).toMatchObject({ id: "skills", label: "skills", type: "local" });
   });
 
   it("lists and migrates project local skills through the API", async () => {
@@ -148,5 +160,43 @@ describe("SkillHub API", () => {
 
     expect(migrated.body).toMatchObject({ action: "migrated", requiresConfirmation: false, localSkill: { skillPath: localSkill } });
     expect(fs.lstatSync(localSkill).isSymbolicLink()).toBe(true);
+  });
+
+  it("previews and creates a CLAUDE.md rule file through the project API", async () => {
+    directory = testDir("skillhub-api-rule-template");
+    context = new AppContext(directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const added = await request(app)
+      .post("/api/projects")
+      .set("x-local-api-token", context.token)
+      .send({ rootPath: projectRoot })
+      .expect(201);
+
+    const preview = await request(app)
+      .post(`/api/projects/${added.body.project.id}/rule-sync/create-preview`)
+      .set("x-local-api-token", context.token)
+      .send({ file: "CLAUDE.md", source: "template" })
+      .expect(200);
+
+    expect(preview.body).toMatchObject({ file: "CLAUDE.md", source: "template", sourceFile: null });
+    expect(preview.body.content).toContain("## 2. Simplicity First");
+
+    const editedContent = "# CLAUDE.md\n\nAPI edited\n";
+    const created = await request(app)
+      .post(`/api/projects/${added.body.project.id}/rule-sync/create`)
+      .set("x-local-api-token", context.token)
+      .send({ file: "CLAUDE.md", content: editedContent })
+      .expect(200);
+
+    expect(created.body).toMatchObject({ file: "CLAUDE.md", action: "created", status: { files: { "CLAUDE.md": { exists: true } } } });
+    expect(fs.readFileSync(path.join(projectRoot, "CLAUDE.md"), "utf8")).toBe(editedContent);
+
+    await request(app)
+      .post(`/api/projects/${added.body.project.id}/rule-sync/create`)
+      .set("x-local-api-token", context.token)
+      .send({ file: "CLAUDE.md", content: "again" })
+      .expect(400);
   });
 });

@@ -39,7 +39,7 @@ describe("McpHub API", () => {
     const added = await request(app)
       .post("/api/projects")
       .set("x-local-api-token", context.token)
-      .send({ rootPath: projectRoot, includeSubdirectories: true })
+      .send({ rootPath: projectRoot, includeSubdirectories: true, toolIds: ["claude"] })
       .expect(201);
 
     const applied = await request(app)

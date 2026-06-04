@@ -4,6 +4,17 @@ import type {
   DeleteSessionResult,
   DirectoryCreateResponse,
   DirectoryPickResponse,
+  HookHubApplyMode,
+  HookHubApplyResult,
+  HookHubExportDocument,
+  HookHubImportConflictMode,
+  HookHubImportResult,
+  HookHubList,
+  HookHubShareResult,
+  HookHubSuite,
+  HookHubSuiteInput,
+  HookHubSupportedToolId,
+  HookHubSyncResult,
   LaunchResponse,
   McpHubCleanupReport,
   McpHubImportResult,
@@ -11,7 +22,10 @@ import type {
   McpHubTargetToolId,
   ParserWarning,
   Project,
+  ProjectHookBindingRemovalResult,
   ProjectDetail,
+  ProjectHookState,
+  ProjectHookToolState,
   ProjectLocalMcpMigrationMode,
   ProjectLocalMcpMigrationResult,
   ProjectLocalSkillMigrationMode,
@@ -30,6 +44,9 @@ import type {
   RefreshResult,
   RelocationPreview,
   RelocationResult,
+  RuleCreatePreview,
+  RuleCreateResult,
+  RuleCreateSource,
   RuleSyncDirection,
   RuleSyncCommitResult,
   RuleSyncResult,
@@ -121,6 +138,20 @@ export const client = {
   mcphub: () => apiGet<McpHubList>("/api/mcphub"),
   importMcpHubJson: (input: string) => apiPost<McpHubImportResult>("/api/mcphub/import", { input }),
   deleteMcpHubServer: (serverId: string) => apiDelete<McpHubCleanupReport>(`/api/mcphub/servers/${encodeURIComponent(serverId)}`),
+  hookhub: (query = "") => apiGet<HookHubList>(`/api/hookhub${query ? `?query=${encodeURIComponent(query)}` : ""}`),
+  createHookHubSuite: (input: HookHubSuiteInput) => apiPost<HookHubSuite>("/api/hookhub/suites", input),
+  updateHookHubSuite: (suiteId: string, input: Partial<HookHubSuiteInput>) =>
+    apiPut<HookHubSuite>(`/api/hookhub/suites/${encodeURIComponent(suiteId)}`, input),
+  deleteHookHubSuite: (suiteId: string) =>
+    apiDelete<{ suiteId: string; deleted: boolean }>(`/api/hookhub/suites/${encodeURIComponent(suiteId)}`),
+  exportHookHubSuite: (suiteId: string) =>
+    apiGet<HookHubExportDocument>(`/api/hookhub/suites/${encodeURIComponent(suiteId)}/export`),
+  syncHookHubSuite: (suiteId: string) =>
+    apiPost<HookHubSyncResult>(`/api/hookhub/suites/${encodeURIComponent(suiteId)}/sync`),
+  importHookHubSuite: (input: string, conflictMode?: HookHubImportConflictMode | null, renameName?: string | null) =>
+    apiPost<HookHubImportResult>("/api/hookhub/import/suite", { input, conflictMode, renameName }),
+  importNativeHooks: (toolId: HookHubSupportedToolId, input: string, suite: HookHubSuiteInput) =>
+    apiPost<HookHubImportResult>("/api/hookhub/import/native", { ...suite, toolId, input }),
   projects: () => apiGet<Project[]>("/api/projects"),
   drives: () => apiGet<ScanDrive[]>("/api/local-filesystem/drives"),
   pickDirectory: () => apiPost<DirectoryPickResponse>("/api/local-filesystem/pick-directory"),
@@ -180,7 +211,48 @@ export const client = {
       mode,
       ...(targetRootPath ? { targetRootPath } : {})
     }),
+  projectHooks: (id: string, targetRootPath?: string, query = "") =>
+    apiGet<ProjectHookState>(`/api/projects/${id}/hooks${projectTargetQuery(targetRootPath, query)}`),
+  writeProjectHooks: (id: string, toolId: HookHubSupportedToolId, hooks: unknown, input: Partial<HookHubSuiteInput> = {}, targetRootPath?: string) =>
+    apiPut<HookHubApplyResult | ProjectHookToolState>(`/api/projects/${id}/hooks/${encodeURIComponent(toolId)}`, {
+      hooks,
+      ...input,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  shareProjectHooks: (id: string, toolId: HookHubSupportedToolId, input: HookHubSuiteInput, targetRootPath?: string) =>
+    apiPost<HookHubShareResult>(`/api/projects/${id}/hooks/${encodeURIComponent(toolId)}/share`, {
+      ...input,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  applyHookHubSuite: (
+    id: string,
+    toolId: HookHubSupportedToolId,
+    suiteId: string,
+    targetRootPath?: string,
+    options: { mode?: HookHubApplyMode | null; preserveName?: string | null; description?: string | null; riskNotes?: string | null; requiredEnv?: string[] } = {}
+  ) =>
+    apiPut<HookHubApplyResult>(`/api/projects/${id}/hooks/${encodeURIComponent(toolId)}/apply/${encodeURIComponent(suiteId)}`, {
+      ...options,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  syncProjectHookTool: (id: string, toolId: HookHubSupportedToolId, targetRootPath?: string) =>
+    apiPost<HookHubApplyResult>(`/api/projects/${id}/hooks/${encodeURIComponent(toolId)}/sync`, {
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  removeProjectHookBinding: (id: string, toolId: HookHubSupportedToolId, targetRootPath?: string) =>
+    apiDelete<ProjectHookBindingRemovalResult>(`/api/projects/${id}/hooks/${encodeURIComponent(toolId)}/binding${projectTargetQuery(targetRootPath)}`),
+  syncProjectHooks: (id: string, targetRootPath?: string) =>
+    apiPost<HookHubSyncResult>(`/api/projects/${id}/hooks/sync`, {
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
   ruleSyncStatus: (id: string) => apiGet<RuleSyncStatus>(`/api/projects/${id}/rule-sync/status`),
+  prepareRuleFileCreate: (id: string, file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"], source: RuleCreateSource) =>
+    apiPost<RuleCreatePreview>(`/api/projects/${id}/rule-sync/create-preview`, { file, source }),
+  createRuleFile: (id: string, file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"], content: string) =>
+    apiPost<RuleCreateResult>(`/api/projects/${id}/rule-sync/create`, { file, content }),
+  createRuleTemplateFile: (id: string) => apiPost<RuleCreateResult>(`/api/projects/${id}/rule-sync/template`),
+  openRuleFile: (id: string, file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"]) =>
+    apiPost<LocalOpenResponse>(`/api/projects/${id}/rule-sync/open`, { file }),
   applyRuleSync: (id: string, direction: RuleSyncDirection, options: { confirmGitInit?: boolean; confirmDirectOverwrite?: boolean } = {}) =>
     apiPost<RuleSyncResult>(`/api/projects/${id}/rule-sync/apply`, { direction, ...options }),
   commitRuleSync: (id: string, direction: RuleSyncDirection) =>
@@ -207,6 +279,10 @@ export const client = {
     apiGet<ParserWarning[]>(projectId ? `/api/parser-warnings?projectId=${encodeURIComponent(projectId)}` : "/api/parser-warnings")
 };
 
-function projectTargetQuery(targetRootPath?: string): string {
-  return targetRootPath ? `?targetRootPath=${encodeURIComponent(targetRootPath)}` : "";
+function projectTargetQuery(targetRootPath?: string, query?: string): string {
+  const params = new URLSearchParams();
+  if (targetRootPath) params.set("targetRootPath", targetRootPath);
+  if (query) params.set("query", query);
+  const text = params.toString();
+  return text ? `?${text}` : "";
 }

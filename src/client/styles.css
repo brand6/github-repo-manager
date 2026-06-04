@@ -318,6 +318,73 @@ label,
   width: min(680px, 100%);
 }
 
+.rule-create-dialog {
+  width: min(760px, 100%);
+}
+
+.rule-create-source-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.rule-create-source-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 8px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.rule-create-source-option.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.rule-create-source-option.disabled {
+  color: var(--text-muted);
+}
+
+.rule-create-source-option input {
+  margin-top: 3px;
+}
+
+.rule-create-source-option span,
+.rule-create-source-option small {
+  min-width: 0;
+}
+
+.rule-create-source-option span {
+  font-weight: 700;
+}
+
+.rule-create-source-option small {
+  grid-column: 2;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.rule-create-preview {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rule-create-preview textarea {
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
 .rule-sync-confirm-summary {
   display: grid;
   gap: 6px;
@@ -570,6 +637,14 @@ label,
   padding-block: 5px;
 }
 
+.rule-sync-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
 .rule-sync-file-list {
   display: grid;
   gap: 8px;
@@ -676,6 +751,165 @@ label,
   border-radius: var(--radius);
   background: var(--surface-muted);
   color: var(--text);
+}
+
+.hookhub-page textarea,
+.project-hooks-panel textarea {
+  width: 100%;
+  min-height: 132px;
+  resize: vertical;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.hookhub-toolbar-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.hookhub-search-field,
+.hookhub-search-field input {
+  width: 100%;
+}
+
+.hookhub-toolbar-actions {
+  justify-content: flex-end;
+}
+
+.hookhub-dialog {
+  width: min(840px, 100%);
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+}
+
+.hookhub-dialog .field.wide {
+  width: 100%;
+}
+
+.hookhub-dialog textarea {
+  min-height: 220px;
+}
+
+.hookhub-suite-summary-actions {
+  align-items: center;
+}
+
+.hookhub-suite-summary-actions button {
+  min-height: 34px;
+}
+
+.hookhub-suite-form,
+.hookhub-suite-body,
+.project-hook-tool-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.hookhub-form-grid,
+.hookhub-import-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.hookhub-payload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.hookhub-suite-list,
+.project-hook-tool-list {
+  display: grid;
+  gap: 12px;
+}
+
+.hookhub-suite-card,
+.project-hook-tool-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.hookhub-suite-card summary,
+.project-hook-tool-row summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  cursor: pointer;
+}
+
+.project-hook-tool-row.unsupported {
+  padding: 14px;
+  background: var(--surface-muted);
+}
+
+.project-hook-tool-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-hook-tool-main strong {
+  color: var(--text);
+}
+
+.project-hook-tool-main p,
+.project-hook-tool-main small {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.project-hook-tool-body {
+  padding: 0 14px 14px;
+}
+
+.hookhub-apply-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.hook-status-current {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.hook-status-outdated,
+.hook-status-drifted,
+.hook-status-unmanaged {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.hook-status-invalid {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.hook-status-missing,
+.hook-status-unsupported {
+  background: var(--surface-muted);
+  color: var(--text-muted);
 }
 
 .tool-refresh-row input {
@@ -926,11 +1160,13 @@ label,
 }
 
 .empty-state h2,
+.empty-state h3,
 .empty-state p {
   margin: 0;
 }
 
-.empty-state h2 {
+.empty-state h2,
+.empty-state h3 {
   color: var(--text);
 }
 
@@ -1777,6 +2013,13 @@ dd {
   transform: rotate(90deg);
 }
 
+.project-mcphub-row > summary input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  min-height: auto;
+  accent-color: var(--primary);
+}
+
 .project-mcphub-body {
   margin: 0 12px 12px;
 }
@@ -1959,6 +2202,10 @@ dd {
     min-width: 0;
   }
 
+  .rule-create-source-options {
+    grid-template-columns: 1fr;
+  }
+
   .detail-relocation {
     display: grid;
     grid-template-columns: 1fr;
@@ -2037,6 +2284,10 @@ dd {
 
   .skillhub-import-panel,
   .skillhub-import-grid,
+  .hookhub-toolbar-panel,
+  .hookhub-form-grid,
+  .hookhub-payload-grid,
+  .hookhub-apply-row,
   .rule-file-grid,
   .project-local-skill-row,
   .project-local-skill-new-source,

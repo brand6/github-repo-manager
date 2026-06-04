@@ -48,6 +48,9 @@
     "files": [
       "dist/server/**/*",
       "dist/client/**/*",
+      ".agents/skills/**/*",
+      "builtin-skills/**/*",
+      "skills-lock.json",
       "package.json"
     ],
     "asar": true,

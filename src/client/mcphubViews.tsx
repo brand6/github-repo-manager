@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type {
   McpHubImportResult,
   McpHubList,
@@ -71,20 +71,19 @@ export function ProjectMcpPanel({
   busy,
   lastApply,
   onClose,
-  onApply,
-  onDisable,
+  onUpdateServerTools,
   onMigrate
 }: {
   state: ProjectMcpState | null;
   busy: boolean;
   lastApply: ProjectMcpApplyResult | null;
   onClose: () => void;
-  onApply: (serverId: string, toolId: McpHubTargetToolId) => void;
-  onDisable: (serverId: string, toolId: McpHubTargetToolId) => void;
+  onUpdateServerTools: (serverId: string, toolIds: McpHubTargetToolId[]) => void;
   onMigrate: (serverId: string) => void;
 }) {
   const [tab, setTab] = useState<"local" | "hub">("local");
   const groupedLocal = useMemo(() => groupLocalEntries(state?.localEntries ?? []), [state]);
+  const enabledTargets = useMemo(() => state?.targets.filter((target) => target.enabled) ?? [], [state]);
 
   return (
     <aside className="side-panel project-mcp-panel" aria-label="项目 MCP 管理">
@@ -154,11 +153,10 @@ export function ProjectMcpPanel({
                     <ProjectMcpHubServerRow
                       key={server.serverId}
                       server={server}
-                      targets={state.targets}
+                      targets={enabledTargets}
                       activeToolIds={active}
                       busy={busy}
-                      onApply={onApply}
-                      onDisable={onDisable}
+                      onUpdateServerTools={onUpdateServerTools}
                     />
                   );
                 })
@@ -176,19 +174,29 @@ function ProjectMcpHubServerRow({
   targets,
   activeToolIds,
   busy,
-  onApply,
-  onDisable
+  onUpdateServerTools
 }: {
   server: McpHubServer;
   targets: ProjectMcpState["targets"];
   activeToolIds: Set<McpHubTargetToolId>;
   busy: boolean;
-  onApply: (serverId: string, toolId: McpHubTargetToolId) => void;
-  onDisable: (serverId: string, toolId: McpHubTargetToolId) => void;
+  onUpdateServerTools: (serverId: string, toolIds: McpHubTargetToolId[]) => void;
 }) {
+  const supportedToolIds = targets.filter((target) => target.supported).map((target) => target.toolId);
+  const activeTargetIds = targets.filter((target) => activeToolIds.has(target.toolId)).map((target) => target.toolId);
+  const checked = supportedToolIds.length > 0 && supportedToolIds.every((toolId) => activeToolIds.has(toolId));
+  const indeterminate = supportedToolIds.some((toolId) => activeToolIds.has(toolId)) && !checked;
+
   return (
     <details className="project-mcphub-row">
       <summary>
+        <IndeterminateCheckbox
+          ariaLabel={`选择 ${server.serverId} 全部工具`}
+          checked={checked}
+          indeterminate={indeterminate}
+          disabled={busy || supportedToolIds.length === 0}
+          onChange={(next) => onUpdateServerTools(server.serverId, next ? supportedToolIds : [])}
+        />
         <span className="skillhub-source-main">
           <span className="skillhub-skill-title">{server.serverId}</span>
           <span className="metric-pill">{server.transport}</span>
@@ -206,7 +214,12 @@ function ProjectMcpHubServerRow({
                   type="checkbox"
                   checked={checked}
                   disabled={busy || !target.supported}
-                  onChange={(event) => (event.target.checked ? onApply(server.serverId, target.toolId) : onDisable(server.serverId, target.toolId))}
+                  onChange={(event) => {
+                    const next = event.target.checked
+                      ? uniqueMcpTargetToolIds([...activeTargetIds, target.toolId])
+                      : activeTargetIds.filter((toolId) => toolId !== target.toolId);
+                    onUpdateServerTools(server.serverId, next);
+                  }}
                 />
                 <span>{target.toolId}</span>
               </label>
@@ -298,4 +311,38 @@ function serverJson(server: McpHubServer): Record<string, unknown> {
 function formatTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function IndeterminateCheckbox({
+  ariaLabel,
+  checked,
+  indeterminate,
+  disabled,
+  onChange
+}: {
+  ariaLabel: string;
+  checked: boolean;
+  indeterminate: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const ref = React.useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return (
+    <input
+      ref={ref}
+      aria-label={ariaLabel}
+      type="checkbox"
+      checked={checked}
+      disabled={disabled}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => onChange(event.target.checked)}
+    />
+  );
+}
+
+function uniqueMcpTargetToolIds(toolIds: McpHubTargetToolId[]): McpHubTargetToolId[] {
+  return [...new Set(toolIds)];
 }

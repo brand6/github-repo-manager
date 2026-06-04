@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import express, { type Express, type Request, type Response } from "express";
 import {
+  type HookHubApplyMode,
+  type HookHubImportConflictMode,
+  type HookHubSuiteInput,
+  type HookHubSupportedToolId,
   isTerminalMode,
   type AppConfig,
   type McpHubTargetToolId,
@@ -9,6 +13,8 @@ import {
   type ProjectLocalSkillMigrationTarget,
   type RefreshMode,
   type RefreshResult,
+  type RuleCreateSource,
+  type RuleFileName,
   type RuleSyncDirection,
   type SkillHubOpenTarget,
   type ToolId
@@ -33,7 +39,8 @@ import {
   listProjectLocalSkillsState,
   migrateProjectLocalSkill,
   openSkillHubSkill,
-  previewDeleteSkillHubSkill
+  previewDeleteSkillHubSkill,
+  seedDefaultSkillHubSources
 } from "../skillhub/skillhub.js";
 import {
   applyProjectMcpServer,
@@ -44,7 +51,25 @@ import {
   listProjectMcpState,
   migrateProjectLocalMcp
 } from "../mcphub/mcphub.js";
-import { applyRuleSync, commitRuleSyncTarget, getRuleSyncStatus } from "../skillhub/ruleSync.js";
+import {
+  applyHookHubSuiteToProject,
+  createHookHubSuite,
+  deleteHookHubSuite,
+  exportHookHubSuite,
+  importHookHubSuiteJson,
+  importNativeToolHooks,
+  isHookHubSupportedToolId,
+  listHookHub,
+  listProjectHookState,
+  removeProjectHookBinding,
+  shareProjectHooksToHookHub,
+  syncHookHubSuiteToEnabledProjects,
+  syncProjectHooksFromHookHub,
+  syncProjectHookToolFromHookHub,
+  updateHookHubSuite,
+  writeProjectHooks
+} from "../hookhub/hookhub.js";
+import { applyRuleSync, commitRuleSyncTarget, createRuleFile, createRuleTemplateFile, getRuleSyncStatus, openRuleFile, prepareRuleFileCreate } from "../skillhub/ruleSync.js";
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../skillhub/projectSkills.js";
 import type { AppContext } from "../appContext.js";
 import type { SessionIndexRunResult } from "../scanning/sessionIndexService.js";
@@ -246,6 +271,88 @@ export function installApi(app: Express, context: AppContext): void {
     }
   });
 
+  app.get("/api/hookhub", (request, response) => {
+    response.json(listHookHub(context.database(), String(request.query.query ?? "")));
+  });
+
+  app.post("/api/hookhub/suites", (request, response) => {
+    const input = hookHubSuiteInputBody(request);
+    if (!input) {
+      response.status(400).json({ error: "name is required" });
+      return;
+    }
+    try {
+      response.status(201).json(createHookHubSuite(context.database(), input));
+    } catch (error) {
+      response.status(400).json({ error: "hookhub-suite-create-failed", reason: error instanceof Error ? error.message : "hookhub-suite-create-failed" });
+    }
+  });
+
+  app.put("/api/hookhub/suites/:suiteId", (request, response) => {
+    try {
+      response.json(updateHookHubSuite(context.database(), request.params.suiteId, hookHubPartialSuiteInputBody(request)));
+    } catch (error) {
+      response.status(400).json({ error: "hookhub-suite-update-failed", reason: error instanceof Error ? error.message : "hookhub-suite-update-failed" });
+    }
+  });
+
+  app.delete("/api/hookhub/suites/:suiteId", (request, response) => {
+    try {
+      response.json(deleteHookHubSuite(context.database(), request.params.suiteId));
+    } catch (error) {
+      response.status(400).json({ error: "hookhub-suite-delete-failed", reason: error instanceof Error ? error.message : "hookhub-suite-delete-failed" });
+    }
+  });
+
+  app.get("/api/hookhub/suites/:suiteId/export", (request, response) => {
+    try {
+      response.json(exportHookHubSuite(context.database(), request.params.suiteId));
+    } catch (error) {
+      response.status(404).json({ error: "hookhub-suite-export-failed", reason: error instanceof Error ? error.message : "hookhub-suite-export-failed" });
+    }
+  });
+
+  app.post("/api/hookhub/suites/:suiteId/sync", (request, response) => {
+    try {
+      response.json(syncHookHubSuiteToEnabledProjects(context.database(), request.params.suiteId));
+    } catch (error) {
+      response.status(400).json({ error: "hookhub-suite-sync-failed", reason: error instanceof Error ? error.message : "hookhub-suite-sync-failed" });
+    }
+  });
+
+  app.post("/api/hookhub/import/suite", (request, response) => {
+    const input = stringBody(request, "input");
+    if (!input) {
+      response.status(400).json({ error: "input is required" });
+      return;
+    }
+    try {
+      response.json(
+        importHookHubSuiteJson(context.database(), input, {
+          conflictMode: hookHubImportConflictModeBody(request),
+          renameName: stringBody(request, "renameName")
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "hookhub-suite-import-failed", reason: error instanceof Error ? error.message : "hookhub-suite-import-failed" });
+    }
+  });
+
+  app.post("/api/hookhub/import/native", (request, response) => {
+    const toolId = hookHubSupportedToolIdBody(request);
+    const input = stringBody(request, "input");
+    const suiteInput = hookHubSuiteInputBody(request);
+    if (!toolId || !input || !suiteInput) {
+      response.status(400).json({ error: "toolId, input, and name are required" });
+      return;
+    }
+    try {
+      response.json(importNativeToolHooks(context.database(), { ...suiteInput, toolId, input }));
+    } catch (error) {
+      response.status(400).json({ error: "hookhub-native-import-failed", reason: error instanceof Error ? error.message : "hookhub-native-import-failed" });
+    }
+  });
+
   app.get("/api/projects", (_request, response) => {
     response.json(context.database().listProjects());
   });
@@ -318,6 +425,9 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.get("/api/projects/:id/skill-targets", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    seedDefaultSkillHubSources(context.database(), context.config(), dataDir);
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) {
       return;
@@ -326,6 +436,9 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.get("/api/projects/:id/local-skills", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    seedDefaultSkillHubSources(context.database(), context.config(), dataDir);
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) {
       return;
@@ -407,7 +520,110 @@ export function installApi(app: Express, context: AppContext): void {
     }
   });
 
+  app.get("/api/projects/:id/hooks", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    response.json(listProjectHookState(context.database(), project, String(request.query.query ?? "")));
+  });
+
+  app.post("/api/projects/:id/hooks/sync", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    try {
+      response.json(syncProjectHooksFromHookHub(context.database(), project));
+    } catch (error) {
+      response.status(400).json({ error: "project-hooks-sync-failed", reason: error instanceof Error ? error.message : "project-hooks-sync-failed" });
+    }
+  });
+
+  app.put("/api/projects/:id/hooks/:toolId", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = hookHubSupportedToolIdParam(request);
+    if (!project) return;
+    if (!toolId || request.body?.hooks === undefined) {
+      response.status(400).json({ error: "toolId must be claude, codex, qwen, or qoder; hooks is required" });
+      return;
+    }
+    try {
+      response.json(writeProjectHooks(context.database(), project, toolId, request.body.hooks, hookHubPartialSuiteInputBody(request)));
+    } catch (error) {
+      response.status(400).json({ error: "project-hooks-write-failed", reason: error instanceof Error ? error.message : "project-hooks-write-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/hooks/:toolId/share", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = hookHubSupportedToolIdParam(request);
+    const input = hookHubSuiteInputBody(request);
+    if (!project) return;
+    if (!toolId || !input) {
+      response.status(400).json({ error: "toolId and name are required" });
+      return;
+    }
+    try {
+      response.json(shareProjectHooksToHookHub(context.database(), project, toolId, input));
+    } catch (error) {
+      response.status(400).json({ error: "project-hooks-share-failed", reason: error instanceof Error ? error.message : "project-hooks-share-failed" });
+    }
+  });
+
+  app.delete("/api/projects/:id/hooks/:toolId/binding", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = hookHubSupportedToolIdParam(request);
+    if (!project) return;
+    if (!toolId) {
+      response.status(400).json({ error: "toolId must be claude, codex, qwen, or qoder" });
+      return;
+    }
+    try {
+      response.json(removeProjectHookBinding(context.database(), project, toolId));
+    } catch (error) {
+      response.status(400).json({ error: "project-hook-binding-remove-failed", reason: error instanceof Error ? error.message : "project-hook-binding-remove-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/hooks/:toolId/sync", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = hookHubSupportedToolIdParam(request);
+    if (!project) return;
+    if (!toolId) {
+      response.status(400).json({ error: "toolId must be claude, codex, qwen, or qoder" });
+      return;
+    }
+    try {
+      response.json(syncProjectHookToolFromHookHub(context.database(), project, toolId));
+    } catch (error) {
+      response.status(400).json({ error: "project-hook-sync-failed", reason: error instanceof Error ? error.message : "project-hook-sync-failed" });
+    }
+  });
+
+  app.put("/api/projects/:id/hooks/:toolId/apply/:suiteId", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = hookHubSupportedToolIdParam(request);
+    if (!project) return;
+    if (!toolId) {
+      response.status(400).json({ error: "toolId must be claude, codex, qwen, or qoder" });
+      return;
+    }
+    try {
+      response.json(
+        applyHookHubSuiteToProject(context.database(), project, toolId, request.params.suiteId, {
+          mode: hookHubApplyModeBody(request),
+          preserveName: stringBody(request, "preserveName"),
+          description: stringBody(request, "description"),
+          riskNotes: stringBody(request, "riskNotes"),
+          requiredEnv: stringArrayBody(request, "requiredEnv")
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "project-hook-apply-failed", reason: error instanceof Error ? error.message : "project-hook-apply-failed" });
+    }
+  });
+
   app.put("/api/projects/:id/skill-targets/:skillId", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    seedDefaultSkillHubSources(context.database(), context.config(), dataDir);
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) {
       return;
@@ -435,6 +651,75 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     response.json(getRuleSyncStatus(project));
+  });
+
+  app.post("/api/projects/:id/rule-sync/create-preview", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const file = ruleFileNameBody(request);
+    const source = ruleCreateSourceBody(request);
+    if (!file || !source) {
+      response.status(400).json({ error: "file must be AGENTS.md or CLAUDE.md and source must be sync or template" });
+      return;
+    }
+    try {
+      response.json(prepareRuleFileCreate(project, file, source));
+    } catch (error) {
+      response.status(400).json({ error: "rule-create-preview-failed", reason: error instanceof Error ? error.message : "rule-create-preview-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/rule-sync/create", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const file = ruleFileNameBody(request);
+    const content = rawStringBody(request, "content");
+    if (!file || content === null) {
+      response.status(400).json({ error: "file must be AGENTS.md or CLAUDE.md and content is required" });
+      return;
+    }
+    try {
+      response.json(createRuleFile(project, file, content));
+    } catch (error) {
+      response.status(400).json({ error: "rule-create-failed", reason: error instanceof Error ? error.message : "rule-create-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/rule-sync/template", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    try {
+      response.json(createRuleTemplateFile(project));
+    } catch (error) {
+      response.status(400).json({ error: "rule-template-create-failed", reason: error instanceof Error ? error.message : "rule-template-create-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/rule-sync/open", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const file = ruleFileNameBody(request);
+    if (!file) {
+      response.status(400).json({ error: "file must be AGENTS.md or CLAUDE.md" });
+      return;
+    }
+    try {
+      response.json(openRuleFile(project, file));
+    } catch (error) {
+      response.status(400).json({ error: "rule-file-open-failed", reason: error instanceof Error ? error.message : "rule-file-open-failed" });
+    }
   });
 
   app.post("/api/projects/:id/rule-sync/apply", (request, response) => {
@@ -735,6 +1020,11 @@ function stringBody(request: Request, key: string): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function rawStringBody(request: Request, key: string): string | null {
+  const value = request.body?.[key];
+  return typeof value === "string" ? value : null;
+}
+
 function isToolId(value: unknown): value is ToolId {
   return value === "codex" || value === "claude" || value === "opencode" || value === "qwen" || value === "qoder" || value === "copilot";
 }
@@ -754,9 +1044,72 @@ function toolIdBody(request: Request): ToolId | null {
   return isToolId(request.body?.toolId) ? request.body.toolId : null;
 }
 
+function hookHubSupportedToolIdBody(request: Request): HookHubSupportedToolId | null {
+  return isHookHubSupportedToolId(request.body?.toolId) ? request.body.toolId : null;
+}
+
 function mcpHubTargetToolIdParam(request: Request): McpHubTargetToolId | null {
   const value = request.params.toolId;
   return value === "claude" || value === "codex" || value === "opencode" ? value : null;
+}
+
+function hookHubSupportedToolIdParam(request: Request): HookHubSupportedToolId | null {
+  return isHookHubSupportedToolId(request.params.toolId) ? request.params.toolId : null;
+}
+
+function hookHubApplyModeBody(request: Request): HookHubApplyMode | null {
+  const value = request.body?.mode;
+  return value === "overwrite" ||
+    value === "upload-then-overwrite" ||
+    value === "update-bound-suite-then-overwrite" ||
+    value === "save-as-new-suite-then-overwrite"
+    ? value
+    : null;
+}
+
+function hookHubImportConflictModeBody(request: Request): HookHubImportConflictMode | null {
+  const value = request.body?.conflictMode;
+  return value === "overwrite" || value === "rename" || value === "cancel" ? value : null;
+}
+
+function hookHubSuiteInputBody(request: Request): HookHubSuiteInput | null {
+  const name = stringBody(request, "name");
+  if (!name) return null;
+  const payloads = hookHubPayloadsBody(request);
+  return {
+    name,
+    description: stringBody(request, "description"),
+    riskNotes: stringBody(request, "riskNotes"),
+    requiredEnv: stringArrayBody(request, "requiredEnv"),
+    ...(Object.keys(payloads).length ? { payloads } : {})
+  };
+}
+
+function hookHubPartialSuiteInputBody(request: Request): Partial<HookHubSuiteInput> {
+  const payloads = hookHubPayloadsBody(request);
+  return {
+    ...(typeof request.body?.name === "string" ? { name: request.body.name } : {}),
+    ...(request.body?.description !== undefined ? { description: typeof request.body.description === "string" ? request.body.description : null } : {}),
+    ...(request.body?.riskNotes !== undefined ? { riskNotes: typeof request.body.riskNotes === "string" ? request.body.riskNotes : null } : {}),
+    ...(request.body?.requiredEnv !== undefined ? { requiredEnv: stringArrayBody(request, "requiredEnv") } : {}),
+    ...(request.body?.payloads !== undefined ? { payloads } : {})
+  };
+}
+
+function hookHubPayloadsBody(request: Request): Partial<Record<HookHubSupportedToolId, unknown>> {
+  const value = request.body?.payloads;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const payloads: HookHubSuiteInput["payloads"] = {};
+  for (const toolId of ["claude", "codex", "qwen", "qoder"] satisfies HookHubSupportedToolId[]) {
+    if (Object.prototype.hasOwnProperty.call(value, toolId)) payloads[toolId] = value[toolId];
+  }
+  return payloads;
+}
+
+function stringArrayBody(request: Request, key: string): string[] {
+  const value = request.body?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item: unknown): item is string => typeof item === "string");
 }
 
 function localMcpMigrationModeBody(request: Request): ProjectLocalMcpMigrationMode | null | undefined {
@@ -838,6 +1191,14 @@ function refreshModeBody(request: Request): RefreshMode | null {
 
 function ruleSyncDirectionBody(request: Request): RuleSyncDirection | null {
   return request.body?.direction === "agents-to-claude" || request.body?.direction === "claude-to-agents" ? request.body.direction : null;
+}
+
+function ruleFileNameBody(request: Request): RuleFileName | null {
+  return request.body?.file === "AGENTS.md" || request.body?.file === "CLAUDE.md" ? request.body.file : null;
+}
+
+function ruleCreateSourceBody(request: Request): RuleCreateSource | null {
+  return request.body?.source === "sync" || request.body?.source === "template" ? request.body.source : null;
 }
 
 function skillHubOpenTargetBody(request: Request): SkillHubOpenTarget | null {
