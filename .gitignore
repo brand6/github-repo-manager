@@ -1,11 +1,48 @@
+# Dependencies
 node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+
+# Build outputs
 dist/
 release/
 coverage/
 .vite/
+*.tsbuildinfo
+
+# Local runtime and test data
 .tmp/
 .test-tmp/
-*.log
+.scratch/browser-verify-data/
+
+# Local app databases
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite-journal
+*.db
+*.db-*
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local tool/editor state
+.codex/
+.claude/
+.obsidian/
+.vscode/
+.idea/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
