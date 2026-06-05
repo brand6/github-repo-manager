@@ -1058,17 +1058,17 @@ function stripYamlQuotes(value: string): string {
 
 function seedDefaultMattPocockSkills(database: AppDatabase, resolved: SkillHubConfig): boolean {
   if (database.getSkillHubSourceByRepoKey(MATT_POCOCK_REPO_KEY)) return true;
-  const installedSkillsRoot = resolveBundledPath(".agents", "skills");
+  const bundledRepoRoot = resolveBundledPath("builtin-skills", MATT_POCOCK_REPO_KEY);
   const skillsLockPath = resolveBundledPath("skills-lock.json");
-  if (!fs.existsSync(installedSkillsRoot) || !fs.existsSync(skillsLockPath)) return false;
+  if (!fs.existsSync(bundledRepoRoot) || !fs.existsSync(skillsLockPath)) return false;
   const lock = readSkillsLock(skillsLockPath);
   const entries = Object.entries(lock.skills).filter(([, entry]) => entry.source === "mattpocock/skills" && entry.sourceType === "github");
   if (entries.length === 0) return false;
 
   const checkoutPath = path.join(resolved.rootDir, "sources", MATT_POCOCK_REPO_KEY, "checkout");
   fs.rmSync(checkoutPath, { recursive: true, force: true });
-  for (const [skillId, entry] of entries) {
-    const skillPath = path.join(installedSkillsRoot, skillId);
+  for (const [, entry] of entries) {
+    const skillPath = path.join(bundledRepoRoot, path.dirname(entry.skillPath));
     if (!hasSkillMarker(skillPath)) continue;
     replaceDirectory(skillPath, path.join(checkoutPath, path.dirname(entry.skillPath)));
   }
