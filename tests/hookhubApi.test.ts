@@ -16,10 +16,15 @@ afterEach(() => {
   directory = null;
 });
 
+function configureClaudeAvailable(appContext: AppContext): void {
+  appContext.config().tools.claude.command = "node";
+}
+
 describe("HookHub API", () => {
   it("creates a suite, applies it to a selected project group, lists status, and exports suite JSON", async () => {
     directory = testDir("hookhub-api");
     context = new AppContext(directory);
+    configureClaudeAvailable(context);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const projectRoot = path.join(directory, "repo");
     const childRoot = path.join(projectRoot, "packages", "app");

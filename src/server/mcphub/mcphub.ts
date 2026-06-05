@@ -19,6 +19,7 @@ import type {
   ProjectMcpTarget,
   ProjectToolTarget
 } from "../../shared/types.js";
+import { mcpHubTargetToolIds } from "../../shared/types.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
 import { listProjectToolTargets } from "../skillhub/projectSkills.js";
@@ -49,7 +50,7 @@ interface ServerPatch {
 type JsonRecord = Record<string, unknown>;
 type PersistableMcpHubServer = Omit<McpHubServer, "createdAt" | "updatedAt" | "builtin">;
 
-const supportedTargets: McpHubTargetToolId[] = ["claude", "codex", "opencode"];
+const supportedTargets: McpHubTargetToolId[] = [...mcpHubTargetToolIds];
 
 const builtInMcpServers: PersistableMcpHubServer[] = loadBuiltInMcpServers();
 
@@ -369,14 +370,13 @@ function readLocalConfig(
   toolId: McpHubTargetToolId,
   configPath: string
 ): Array<{ serverId: string; server: McpHubServer | null; reason: string | null }> {
-  if (toolId === "claude") return readJsonServerMap(configPath, "mcpServers", "claude");
-  if (toolId === "opencode") return readJsonServerMap(configPath, "mcp", "opencode");
-  return readCodexConfig(configPath);
+  if (toolId === "codex") return readCodexConfig(configPath);
+  return readJsonServerMap(configPath, jsonServerMapKey(toolId), toolId);
 }
 
 function readJsonServerMap(
   configPath: string,
-  key: "mcpServers" | "mcp",
+  key: "mcpServers" | "mcp" | "servers",
   source: McpHubTargetToolId
 ): Array<{ serverId: string; server: McpHubServer | null; reason: string | null }> {
   const root = parseLooseJson(fs.readFileSync(configPath, "utf8"));
@@ -466,7 +466,8 @@ function candidateFromEntry(serverId: string, fragment: unknown, source: McpHubT
 
   const commandValue = fragment.command;
   const hasCommand = typeof commandValue === "string" || isStringArray(commandValue);
-  const hasUrl = typeof fragment.url === "string";
+  const urlValue = stringField(fragment, "url") ?? stringField(fragment, "httpUrl") ?? stringField(fragment, "serverUrl");
+  const hasUrl = typeof urlValue === "string";
   let transport = transportFromValue(explicitTransport);
   if (!transport && (explicitTransport === "local" || explicitTransport === "remote")) {
     transport = explicitTransport === "local" ? "stdio" : "http";
@@ -489,7 +490,7 @@ function candidateFromEntry(serverId: string, fragment: unknown, source: McpHubT
   }
 
   if (isStringArray(fragment.args)) patch.args = fragment.args;
-  if (typeof fragment.url === "string") patch.url = fragment.url;
+  if (urlValue) patch.url = urlValue;
 
   const headers = stringRecordField(fragment, "headers");
   const env = stringRecordField(fragment, source === "opencode" ? "environment" : "env") ?? stringRecordField(fragment, "env");
@@ -564,6 +565,26 @@ function renderServerForTarget(server: McpHubServer, targetRootPath: string, too
     if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
     return compactObject({ url: rendered.url, headers: rendered.headers });
   }
+  if (toolId === "gemini") {
+    if (rendered.transport === "stdio") {
+      return compactObject({ type: "stdio", command: rendered.command, args: rendered.args, env: rendered.env });
+    }
+    return compactObject({ httpUrl: rendered.url, headers: rendered.headers });
+  }
+  if (toolId === "cursor" || toolId === "copilot_vscode") {
+    if (rendered.transport === "stdio") {
+      return compactObject({ type: "stdio", command: rendered.command, args: rendered.args, env: rendered.env });
+    }
+    return compactObject({ type: "http", url: rendered.url, headers: rendered.headers });
+  }
+  if (toolId === "antigravity") {
+    if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
+    return compactObject({ serverUrl: rendered.url, headers: rendered.headers });
+  }
+  if (toolId === "junie") {
+    if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
+    return compactObject({ url: rendered.url, headers: rendered.headers });
+  }
   if (rendered.transport === "stdio") {
     return compactObject({
       type: "local",
@@ -588,18 +609,12 @@ function renderCoreServer(server: McpHubServer, targetRootPath: string): McpHubS
 
 function writeRenderedConfig(configPath: string, toolId: McpHubTargetToolId, serverId: string, rendered: unknown): void {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  if (toolId === "claude") {
+  if (toolId !== "codex") {
+    const key = jsonServerMapKey(toolId);
     const root = readJsonObjectFile(configPath);
-    const mcpServers = isRecord(root.mcpServers) ? { ...root.mcpServers } : {};
-    mcpServers[serverId] = rendered;
-    writeJsonObjectFile(configPath, { ...root, mcpServers });
-    return;
-  }
-  if (toolId === "opencode") {
-    const root = readJsonObjectFile(configPath);
-    const mcp = isRecord(root.mcp) ? { ...root.mcp } : {};
-    mcp[serverId] = rendered;
-    writeJsonObjectFile(configPath, { ...root, mcp });
+    const serverMap = isRecord(root[key]) ? { ...root[key] } : {};
+    serverMap[serverId] = rendered;
+    writeJsonObjectFile(configPath, withTargetJsonDefaults(toolId, { ...root, [key]: serverMap }));
     return;
   }
   writeCodexMcpSection(configPath, serverId, rendered);
@@ -607,23 +622,32 @@ function writeRenderedConfig(configPath: string, toolId: McpHubTargetToolId, ser
 
 function removeRenderedConfigEntry(configPath: string, toolId: McpHubTargetToolId, serverId: string): { modified: boolean; missing: boolean; reason: string | null } {
   if (!fs.existsSync(configPath)) return { modified: false, missing: true, reason: "配置文件不存在" };
-  if (toolId === "claude") {
+  if (toolId !== "codex") {
+    const key = jsonServerMapKey(toolId);
     const root = readJsonObjectFile(configPath);
-    if (!isRecord(root.mcpServers) || !(serverId in root.mcpServers)) return { modified: false, missing: false, reason: "entry 已不存在" };
-    const mcpServers = { ...root.mcpServers };
-    delete mcpServers[serverId];
-    writeJsonObjectFile(configPath, { ...root, mcpServers });
-    return { modified: true, missing: false, reason: null };
-  }
-  if (toolId === "opencode") {
-    const root = readJsonObjectFile(configPath);
-    if (!isRecord(root.mcp) || !(serverId in root.mcp)) return { modified: false, missing: false, reason: "entry 已不存在" };
-    const mcp = { ...root.mcp };
-    delete mcp[serverId];
-    writeJsonObjectFile(configPath, { ...root, mcp });
+    if (!isRecord(root[key]) || !(serverId in root[key])) return { modified: false, missing: false, reason: "entry 已不存在" };
+    const serverMap = { ...root[key] };
+    delete serverMap[serverId];
+    writeJsonObjectFile(configPath, withTargetJsonDefaults(toolId, { ...root, [key]: serverMap }));
     return { modified: true, missing: false, reason: null };
   }
   return removeCodexMcpSection(configPath, serverId);
+}
+
+function jsonServerMapKey(toolId: Exclude<McpHubTargetToolId, "codex">): "mcpServers" | "mcp" | "servers" {
+  if (toolId === "opencode") return "mcp";
+  if (toolId === "copilot_vscode") return "servers";
+  return "mcpServers";
+}
+
+function withTargetJsonDefaults(toolId: Exclude<McpHubTargetToolId, "codex">, root: JsonRecord): JsonRecord {
+  if (toolId !== "gemini") return root;
+  const existingContext = isRecord(root.context) ? root.context : {};
+  return {
+    ...root,
+    context: { ...existingContext, fileName: stringField(existingContext, "fileName") ?? "AGENTS.md" },
+    contextFileName: typeof root.contextFileName === "string" ? root.contextFileName : "AGENTS.md"
+  };
 }
 
 function readJsonObjectFile(configPath: string): JsonRecord {
@@ -753,13 +777,26 @@ function mcpTargetForRoot(rootPath: string, toolId: McpHubTargetToolId, toolTarg
     inferred: toolTarget?.inferred ?? false,
     updatedAt: toolTarget?.updatedAt ?? new Date(0).toISOString()
   };
-  if (toolId === "claude") {
-    return { ...base, toolId, label: "Claude Code", supported: true, configPath: path.join(rootPath, ".mcp.json"), reason: null };
+  switch (toolId) {
+    case "claude":
+      return { ...base, toolId, label: "Claude Code", supported: true, configPath: path.join(rootPath, ".mcp.json"), reason: null };
+    case "codex":
+      return { ...base, toolId, label: "Codex", supported: true, configPath: path.join(rootPath, ".codex", "config.toml"), reason: null };
+    case "opencode":
+      return { ...base, toolId, label: "OpenCode", supported: true, configPath: path.join(rootPath, "opencode.json"), reason: null };
+    case "gemini":
+      return { ...base, toolId, label: "Gemini CLI", supported: true, configPath: path.join(rootPath, ".gemini", "settings.json"), reason: null };
+    case "cursor":
+      return { ...base, toolId, label: "Cursor", supported: true, configPath: path.join(rootPath, ".cursor", "mcp.json"), reason: null };
+    case "copilot_vscode":
+      return { ...base, toolId, label: "Copilot VS Code", supported: true, configPath: path.join(rootPath, ".vscode", "mcp.json"), reason: null };
+    case "antigravity":
+      return { ...base, toolId, label: "Antigravity", supported: true, configPath: path.join(rootPath, ".agents", "mcp_config.json"), reason: null };
+    case "junie":
+      return { ...base, toolId, label: "Junie", supported: true, configPath: path.join(rootPath, ".junie", "mcp", "mcp.json"), reason: null };
   }
-  if (toolId === "codex") {
-    return { ...base, toolId, label: "Codex", supported: true, configPath: path.join(rootPath, ".codex", "config.toml"), reason: null };
-  }
-  return { ...base, toolId, label: "OpenCode", supported: true, configPath: path.join(rootPath, "opencode.json"), reason: null };
+  const exhaustive: never = toolId;
+  return { ...base, toolId: exhaustive, label: exhaustive, supported: false, configPath: rootPath, reason: "未知 MCP 目标" };
 }
 
 function parseLooseJson(input: string): unknown {
@@ -816,7 +853,7 @@ function balanceBrackets(input: string): string {
 }
 
 function looksLikeServer(value: JsonRecord): boolean {
-  return ["command", "url", "transport", "type", "args", "env", "environment", "requiredEnv"].some((key) => key in value);
+  return ["command", "url", "httpUrl", "serverUrl", "transport", "type", "args", "env", "environment", "requiredEnv"].some((key) => key in value);
 }
 
 function missingRequiredReason(patch: ServerPatch): string {

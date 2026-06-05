@@ -5,7 +5,7 @@ import request from "supertest";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppContext } from "../src/server/appContext.js";
 import { createHttpApp } from "../src/server/http/app.js";
-import type { SessionEntry } from "../src/shared/types.js";
+import { toolIds, type SessionEntry } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 import { createOpencodeDb } from "./opencodeDb.js";
 
@@ -18,6 +18,13 @@ afterEach(() => {
   if (directory) cleanup(directory);
   directory = null;
 });
+
+function configureOnlyCodexAvailable(appContext: AppContext): void {
+  for (const toolId of toolIds) {
+    appContext.config().tools[toolId].command = `missing-${toolId}-cli-for-test`;
+  }
+  appContext.config().tools.codex.command = "node";
+}
 
 describe("API", () => {
   it("rejects calls without the startup token", async () => {
@@ -50,6 +57,52 @@ describe("API", () => {
       .set("x-local-api-token", context.token)
       .expect(200);
     expect(detail.body.groups[0].isRoot).toBe(true);
+  });
+
+  it("only returns installed CLI tools from project tool targets", async () => {
+    directory = testDir("api-project-tool-targets-installed-only");
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot);
+    context = new AppContext(directory);
+    configureOnlyCodexAvailable(context);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    const added = await request(app)
+      .post("/api/projects")
+      .set("x-local-api-token", context.token)
+      .send({ rootPath: projectRoot })
+      .expect(201);
+    const projectId = added.body.project.id as string;
+
+    const targets = await request(app)
+      .get(`/api/projects/${projectId}/tool-targets`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+    expect(targets.body.map((target: { toolId: string }) => target.toolId)).toEqual(["codex"]);
+
+    const rejected = await request(app)
+      .patch(`/api/projects/${projectId}/tool-targets`)
+      .set("x-local-api-token", context.token)
+      .send({ toolIds: ["codex", "qwen"] })
+      .expect(409);
+    expect(rejected.body).toMatchObject({ error: "tool-unavailable", toolIds: ["qwen"] });
+  });
+
+  it("rejects unavailable CLI tools when adding a project", async () => {
+    directory = testDir("api-project-add-unavailable-tool");
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot);
+    context = new AppContext(directory);
+    configureOnlyCodexAvailable(context);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    await request(app)
+      .post("/api/projects")
+      .set("x-local-api-token", context.token)
+      .send({ rootPath: projectRoot, toolIds: ["qwen"] })
+      .expect(409);
+    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    expect(projects.body).toEqual([]);
   });
 
   it("injects the local API token into the production index", async () => {

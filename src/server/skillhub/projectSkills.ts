@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
+  AppConfig,
   Project,
   ProjectSkillConflict,
   ProjectSkillLinkFailure,
@@ -10,17 +11,18 @@ import type {
   ProjectToolTarget,
   ToolId
 } from "../../shared/types.js";
+import { toolIds } from "../../shared/types.js";
 import type { AppDatabase } from "../storage/database.js";
 import { isPathInsideOrEqual } from "../core/pathUtils.js";
-import { toolAdapters } from "../tools/adapters.js";
+import { projectConfigurableToolStatuses, toolAdapters } from "../tools/adapters.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "./links.js";
 
-const allToolIds: ToolId[] = ["codex", "claude", "opencode", "qwen", "qoder", "copilot"];
+const allToolIds: ToolId[] = [...toolIds];
 
-export function listProjectToolTargets(database: AppDatabase, project: Project): ProjectToolTarget[] {
-  ensureProjectToolTargets(database, project);
+export function listProjectToolTargets(database: AppDatabase, project: Project, config?: AppConfig): ProjectToolTarget[] {
+  ensureProjectToolTargets(database, project, config);
   const stored = new Map(database.listStoredProjectToolTargets(project.id).map((target) => [target.toolId, target]));
-  return allToolIds.map((toolId) => {
+  return projectTargetToolIds(config).map((toolId) => {
     const adapterTarget = toolAdapters[toolId].skillTarget(project.rootPath);
     const row = stored.get(toolId);
     return {
@@ -36,9 +38,14 @@ export function listProjectToolTargets(database: AppDatabase, project: Project):
   });
 }
 
-export function updateProjectToolTargets(database: AppDatabase, project: Project, toolIds: ToolId[]): ProjectToolTarget[] {
-  database.replaceProjectToolTargets(project.id, uniqueToolIds(toolIds));
-  return listProjectToolTargets(database, project);
+export function updateProjectToolTargets(database: AppDatabase, project: Project, toolIds: ToolId[], config?: AppConfig): ProjectToolTarget[] {
+  database.replaceProjectToolTargets(project.id, uniqueProjectToolIds(toolIds, config));
+  return listProjectToolTargets(database, project, config);
+}
+
+export function unavailableProjectToolIds(config: AppConfig, toolIds: ToolId[]): ToolId[] {
+  const allowed = new Set(projectTargetToolIds(config));
+  return uniqueToolIds(toolIds).filter((toolId) => !allowed.has(toolId));
 }
 
 export function listProjectSkillTargetsState(database: AppDatabase, project: Project): ProjectSkillTargetsState {
@@ -158,10 +165,10 @@ function scopedProjectSkillTargets(database: AppDatabase, projectId: string, too
   );
 }
 
-export function ensureProjectToolTargets(database: AppDatabase, project: Project): void {
+export function ensureProjectToolTargets(database: AppDatabase, project: Project, config?: AppConfig): void {
   const stored = new Map(database.listStoredProjectToolTargets(project.id).map((target) => [target.toolId, target]));
   const inferred = inferProjectToolIds(database, project);
-  for (const toolId of allToolIds) {
+  for (const toolId of projectTargetToolIds(config)) {
     const existing = stored.get(toolId);
     const enabled = inferred.has(toolId);
     if (existing && !existing.inferred) continue;
@@ -189,12 +196,28 @@ const projectTraceMap: Record<ToolId, string[]> = {
   opencode: [".opencode", "OPENCODE.md"],
   qwen: [".qwen", "QWEN.md"],
   qoder: [".qoder", "QODER.md"],
-  copilot: [".github/copilot-instructions.md"]
+  copilot: [".github/copilot-instructions.md"],
+  gemini: [".gemini", "GEMINI.md"],
+  cursor: [".cursor", ".cursorrules"],
+  antigravity: [".agents/mcp_config.json"],
+  windsurf: [".windsurf"],
+  junie: [".junie"],
+  copilot_vscode: [".vscode/mcp.json"]
 };
 
 function uniqueToolIds(toolIds: ToolId[]): ToolId[] {
   const allowed = new Set<ToolId>(allToolIds);
   return [...new Set(toolIds.filter((toolId) => allowed.has(toolId)))];
+}
+
+function uniqueProjectToolIds(toolIds: ToolId[], config?: AppConfig): ToolId[] {
+  const allowed = new Set(projectTargetToolIds(config));
+  return uniqueToolIds(toolIds).filter((toolId) => allowed.has(toolId));
+}
+
+function projectTargetToolIds(config?: AppConfig): ToolId[] {
+  if (!config) return allToolIds;
+  return projectConfigurableToolStatuses(config).map((tool) => tool.toolId);
 }
 
 function failure(projectId: string, toolId: ToolId, skillId: string, linkPath: string, targetPath: string, reason: string): ProjectSkillLinkFailure {

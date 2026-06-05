@@ -167,7 +167,7 @@ const builtInClis: BuiltInCli[] = [
     displayName: "Qoder",
     kind: "project-tool",
     commandNames: ["qoder"],
-    channels: []
+    channels: [providerChannel("qoder:npm", "npm", "@qoder-ai/qodercli")]
   },
   {
     cliId: "copilot",
@@ -175,6 +175,107 @@ const builtInClis: BuiltInCli[] = [
     kind: "project-tool",
     commandNames: ["copilot"],
     channels: [providerChannel("copilot:npm", "npm", "@github/copilot")]
+  },
+  {
+    cliId: "gemini",
+    displayName: "Gemini CLI",
+    kind: "project-tool",
+    commandNames: ["gemini"],
+    channels: [providerChannel("gemini:npm", "npm", "@google/gemini-cli")]
+  },
+  {
+    cliId: "cursor",
+    displayName: "Cursor Agent",
+    kind: "project-tool",
+    commandNames: ["cursor-agent"],
+    channels: [
+      installerCommandChannel("cursor:official-posix", "official install script: macOS/Linux/WSL", "cursor-agent", [
+        "bash",
+        "-lc",
+        "curl https://cursor.com/install -fsS | bash"
+      ]),
+      installerCommandChannel("cursor:official-windows", "official install script: Windows PowerShell", "cursor-agent", [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "iex (irm 'https://cursor.com/install?win32=true')"
+      ])
+    ]
+  },
+  {
+    cliId: "antigravity",
+    displayName: "Antigravity",
+    kind: "project-tool",
+    commandNames: ["agy"],
+    channels: [
+      installerCommandChannel("antigravity:official-posix", "official install script: macOS/Linux", "agy", [
+        "bash",
+        "-lc",
+        "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+      ]),
+      installerCommandChannel("antigravity:official-windows", "official install script: Windows PowerShell", "agy", [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "iex (irm 'https://antigravity.google/cli/install.ps1')"
+      ])
+    ]
+  },
+  {
+    cliId: "windsurf",
+    displayName: "Windsurf",
+    kind: "project-tool",
+    commandNames: ["windsurf"],
+    channels: [
+      providerChannel("windsurf:winget", "winget", "Codeium.Windsurf"),
+      providerChannel("windsurf:choco", "choco", "windsurf")
+    ]
+  },
+  {
+    cliId: "junie",
+    displayName: "Junie",
+    kind: "project-tool",
+    commandNames: ["junie"],
+    channels: [
+      installerCommandChannel("junie:official-posix", "official install script: macOS/Linux", "junie", [
+        "bash",
+        "-lc",
+        "curl -fsSL https://junie.jetbrains.com/install.sh | bash"
+      ]),
+      installerCommandChannel("junie:official-windows", "official install script: Windows PowerShell", "junie", [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "iex (irm 'https://junie.jetbrains.com/install.ps1')"
+      ])
+    ]
+  },
+  {
+    cliId: "copilot_vscode",
+    displayName: "Copilot VS Code",
+    kind: "project-tool",
+    commandNames: ["code"],
+    channels: [
+      providerChannel("copilot-vscode:winget-vscode", "winget", "Microsoft.VisualStudioCode"),
+      providerChannel("copilot-vscode:choco-vscode", "choco", "vscode"),
+      providerChannel("copilot-vscode:scoop-vscode", "scoop", "vscode"),
+      installerCommandChannel("copilot-vscode:copilot-extension", "VS Code extension: GitHub.copilot", "GitHub.copilot", [
+        "code",
+        "--install-extension",
+        "GitHub.copilot"
+      ]),
+      installerCommandChannel("copilot-vscode:copilot-chat-extension", "VS Code extension: GitHub.copilot-chat", "GitHub.copilot-chat", [
+        "code",
+        "--install-extension",
+        "GitHub.copilot-chat"
+      ])
+    ]
   },
   {
     cliId: "lark-cli",
@@ -901,6 +1002,21 @@ function providerChannel(channelId: string, provider: Exclude<CliHubProvider, "l
     updateCommand: null,
     checkCommand: null,
     appManaged: provider === "github-release",
+    metadata: {},
+    builtin: true
+  };
+}
+
+function installerCommandChannel(channelId: string, label: string, packageId: string, installCommand: string[]): CliHubChannel {
+  return {
+    channelId,
+    provider: "installer-command",
+    label,
+    packageId,
+    installCommand,
+    updateCommand: null,
+    checkCommand: null,
+    appManaged: false,
     metadata: {},
     builtin: true
   };

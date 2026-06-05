@@ -126,6 +126,62 @@ describe("McpHub", () => {
     db.close();
   });
 
+  it("applies additional project-local MCP target formats", () => {
+    directory = testDir("mcphub-apply-additional-tools");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["gemini", "cursor", "copilot_vscode", "antigravity", "junie"]);
+    const server = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: "Docs server",
+      transport: "stdio",
+      command: "node",
+      args: ["${PROJECT_ROOT}\\server.js"],
+      url: null,
+      headers: {},
+      env: { DOCS_TOKEN: "${DOCS_TOKEN}" },
+      requiredEnv: []
+    });
+
+    applyProjectMcpServer(db, project, "gemini", server.serverId);
+    applyProjectMcpServer(db, project, "cursor", server.serverId);
+    applyProjectMcpServer(db, project, "copilot_vscode", server.serverId);
+    applyProjectMcpServer(db, project, "antigravity", server.serverId);
+    applyProjectMcpServer(db, project, "junie", server.serverId);
+
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".gemini", "settings.json"), "utf8"))).toMatchObject({
+      context: { fileName: "AGENTS.md" },
+      contextFileName: "AGENTS.md",
+      mcpServers: {
+        docs: { type: "stdio", command: "node", args: [`${projectRoot}\\server.js`], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".cursor", "mcp.json"), "utf8"))).toMatchObject({
+      mcpServers: {
+        docs: { type: "stdio", command: "node", args: [`${projectRoot}\\server.js`], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".vscode", "mcp.json"), "utf8"))).toMatchObject({
+      servers: {
+        docs: { type: "stdio", command: "node", args: [`${projectRoot}\\server.js`], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".agents", "mcp_config.json"), "utf8"))).toMatchObject({
+      mcpServers: {
+        docs: { command: "node", args: [`${projectRoot}\\server.js`], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".junie", "mcp", "mcp.json"), "utf8"))).toMatchObject({
+      mcpServers: {
+        docs: { command: "node", args: [`${projectRoot}\\server.js`], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+    db.close();
+  });
+
   it("keeps failed MCP cleanup bindings owned when deleting a center server", () => {
     directory = testDir("mcphub-delete-partial-failure");
     const db = new AppDatabase(directory);
@@ -188,7 +244,12 @@ describe("McpHub", () => {
     expect(state.targets.map((target) => ({ toolId: target.toolId, enabled: target.enabled }))).toEqual([
       { toolId: "claude", enabled: true },
       { toolId: "codex", enabled: true },
-      { toolId: "opencode", enabled: false }
+      { toolId: "opencode", enabled: false },
+      { toolId: "gemini", enabled: false },
+      { toolId: "cursor", enabled: false },
+      { toolId: "copilot_vscode", enabled: false },
+      { toolId: "antigravity", enabled: false },
+      { toolId: "junie", enabled: false }
     ]);
 
     expect(() => applyProjectMcpServer(db, project, "opencode", server.serverId)).toThrow("该工具未在项目中启用");

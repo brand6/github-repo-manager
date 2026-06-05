@@ -5,7 +5,9 @@ import {
   type HookHubImportConflictMode,
   type HookHubSuiteInput,
   type HookHubSupportedToolId,
+  isMcpHubTargetToolId,
   isTerminalMode,
+  isToolId,
   type AppConfig,
   type McpHubTargetToolId,
   type ProjectLocalMcpMigrationMode,
@@ -84,7 +86,7 @@ import {
   writeProjectHooks
 } from "../hookhub/hookhub.js";
 import { applyRuleSync, commitRuleSyncTarget, createRuleFile, createRuleTemplateFile, getRuleSyncStatus, openRuleFile, prepareRuleFileCreate } from "../skillhub/ruleSync.js";
-import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../skillhub/projectSkills.js";
+import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, unavailableProjectToolIds, updateProjectToolTargets } from "../skillhub/projectSkills.js";
 import type { AppContext } from "../appContext.js";
 import type { SessionIndexRunResult } from "../scanning/sessionIndexService.js";
 
@@ -574,9 +576,18 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
       return;
     }
+    const unavailableToolIds = toolIds ? unavailableProjectToolIds(context.config(), toolIds) : [];
+    if (unavailableToolIds.length > 0) {
+      response.status(409).json({
+        error: "tool-unavailable",
+        toolIds: unavailableToolIds,
+        reason: `只支持本机已安装的 CLI：${unavailableToolIds.join(", ")}`
+      });
+      return;
+    }
     const result = context.database().addProject(rootPath, includeSubdirectories);
     if (toolIds) {
-      updateProjectToolTargets(context.database(), result.project, toolIds);
+      updateProjectToolTargets(context.database(), result.project, toolIds, context.config());
     }
     response.status(201).json(result);
   });
@@ -612,7 +623,7 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(404).json({ error: "project-not-found" });
       return;
     }
-    response.json(listProjectToolTargets(context.database(), project));
+    response.json(listProjectToolTargets(context.database(), project, context.config()));
   });
 
   app.patch("/api/projects/:id/tool-targets", (request, response) => {
@@ -626,7 +637,16 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
       return;
     }
-    response.json(updateProjectToolTargets(context.database(), project, toolIds));
+    const unavailableToolIds = unavailableProjectToolIds(context.config(), toolIds);
+    if (unavailableToolIds.length > 0) {
+      response.status(409).json({
+        error: "tool-unavailable",
+        toolIds: unavailableToolIds,
+        reason: `只支持本机已安装的 CLI：${unavailableToolIds.join(", ")}`
+      });
+      return;
+    }
+    response.json(updateProjectToolTargets(context.database(), project, toolIds, context.config()));
   });
 
   app.get("/api/projects/:id/skill-targets", (request, response) => {
@@ -1244,10 +1264,6 @@ function rawStringBody(request: Request, key: string): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function isToolId(value: unknown): value is ToolId {
-  return value === "codex" || value === "claude" || value === "opencode" || value === "qwen" || value === "qoder" || value === "copilot";
-}
-
 function toolIdsBody(request: Request): ToolId[] | undefined | null {
   if (request.body?.toolIds === undefined) return undefined;
   if (!Array.isArray(request.body.toolIds)) return null;
@@ -1268,8 +1284,7 @@ function hookHubSupportedToolIdBody(request: Request): HookHubSupportedToolId | 
 }
 
 function mcpHubTargetToolIdParam(request: Request): McpHubTargetToolId | null {
-  const value = request.params.toolId;
-  return value === "claude" || value === "codex" || value === "opencode" ? value : null;
+  return isMcpHubTargetToolId(request.params.toolId) ? request.params.toolId : null;
 }
 
 function hookHubSupportedToolIdParam(request: Request): HookHubSupportedToolId | null {

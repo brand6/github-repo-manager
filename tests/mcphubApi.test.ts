@@ -16,10 +16,15 @@ afterEach(() => {
   directory = null;
 });
 
+function configureClaudeAvailable(appContext: AppContext): void {
+  appContext.config().tools.claude.command = "node";
+}
+
 describe("McpHub API", () => {
   it("lists center servers and applies MCP to the selected project group", async () => {
     directory = testDir("mcphub-api");
     context = new AppContext(directory);
+    configureClaudeAvailable(context);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const projectRoot = path.join(directory, "repo");
     const childRoot = path.join(projectRoot, "packages", "app");

@@ -23,6 +23,7 @@ import type {
   SkillHubSourceType,
   ToolId
 } from "../../shared/types.js";
+import { toolIds as allToolIds } from "../../shared/types.js";
 import { json, parseJson } from "../core/json.js";
 import { candidateSortKey, isPathInsideOrEqual, isStrictChildPath, normalizeFsPath, rebasePath, relativeLabel } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
@@ -955,7 +956,7 @@ export class AppDatabase {
     const selected = new Set(toolIds);
     this.db.exec("BEGIN;");
     try {
-      for (const toolId of ["codex", "claude", "opencode", "qwen", "qoder", "copilot"] satisfies ToolId[]) {
+      for (const toolId of allToolIds) {
         this.upsertProjectToolTarget(projectId, toolId, selected.has(toolId), false);
       }
       this.db.exec("COMMIT;");

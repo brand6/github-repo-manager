@@ -34,24 +34,122 @@ describe("CliHub", () => {
     const db = new AppDatabase(directory);
 
     const clihub = listCliHub(db);
+    const cliById = new Map(clihub.clis.map((cli) => [cli.cliId, cli]));
+    const channels = (cliId: string) => {
+      const cli = cliById.get(cliId);
+      if (!cli) throw new Error(`missing ${cliId}`);
+      return cli.channels;
+    };
+
     expect(clihub.clis.filter((cli) => cli.kind === "project-tool").map((cli) => cli.cliId)).toEqual([
+      "antigravity",
       "claude",
       "codex",
+      "copilot_vscode",
+      "cursor",
+      "gemini",
       "copilot",
+      "junie",
       "opencode",
       "qoder",
-      "qwen"
+      "qwen",
+      "windsurf"
     ]);
     expect(clihub.clis.filter((cli) => cli.kind === "function").map((cli) => cli.cliId)).toEqual(["gh", "playwright", "lark-cli"]);
     expect(clihub.clis.filter((cli) => cli.kind === "dependency").map((cli) => cli.cliId)).toEqual(["git", "node", "npm"]);
-    expect(clihub.clis.find((cli) => cli.cliId === "codex")?.channels.some((channel) => channel.provider === "npm")).toBe(true);
-    expect(clihub.clis.find((cli) => cli.cliId === "playwright")?.channels).toEqual(
+    expect(channels("codex").some((channel) => channel.provider === "npm")).toBe(true);
+    expect(channels("playwright")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           channelId: "playwright:npm",
           provider: "npm",
           packageId: "@playwright/test",
           installCommand: ["npm", "install", "-g", "@playwright/test"]
+        })
+      ])
+    );
+    expect(channels("qoder")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "qoder:npm",
+          provider: "npm",
+          packageId: "@qoder-ai/qodercli",
+          installCommand: ["npm", "install", "-g", "@qoder-ai/qodercli"]
+        })
+      ])
+    );
+    expect(channels("gemini")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "gemini:npm",
+          provider: "npm",
+          packageId: "@google/gemini-cli",
+          installCommand: ["npm", "install", "-g", "@google/gemini-cli"]
+        })
+      ])
+    );
+    expect(channels("cursor")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "cursor:official-posix",
+          provider: "installer-command",
+          installCommand: ["bash", "-lc", "curl https://cursor.com/install -fsS | bash"]
+        }),
+        expect.objectContaining({
+          channelId: "cursor:official-windows",
+          provider: "installer-command",
+          installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "iex (irm 'https://cursor.com/install?win32=true')"]
+        })
+      ])
+    );
+    expect(channels("antigravity")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "antigravity:official-posix",
+          provider: "installer-command",
+          installCommand: ["bash", "-lc", "curl -fsSL https://antigravity.google/cli/install.sh | bash"]
+        }),
+        expect.objectContaining({
+          channelId: "antigravity:official-windows",
+          provider: "installer-command",
+          installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "iex (irm 'https://antigravity.google/cli/install.ps1')"]
+        })
+      ])
+    );
+    expect(channels("windsurf")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channelId: "windsurf:winget", provider: "winget", packageId: "Codeium.Windsurf" }),
+        expect.objectContaining({ channelId: "windsurf:choco", provider: "choco", packageId: "windsurf" })
+      ])
+    );
+    expect(channels("junie")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "junie:official-posix",
+          provider: "installer-command",
+          installCommand: ["bash", "-lc", "curl -fsSL https://junie.jetbrains.com/install.sh | bash"]
+        }),
+        expect.objectContaining({
+          channelId: "junie:official-windows",
+          provider: "installer-command",
+          installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "iex (irm 'https://junie.jetbrains.com/install.ps1')"]
+        })
+      ])
+    );
+    expect(channels("copilot_vscode")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channelId: "copilot-vscode:winget-vscode", provider: "winget", packageId: "Microsoft.VisualStudioCode" }),
+        expect.objectContaining({ channelId: "copilot-vscode:choco-vscode", provider: "choco", packageId: "vscode" }),
+        expect.objectContaining({ channelId: "copilot-vscode:scoop-vscode", provider: "scoop", packageId: "vscode" }),
+        expect.objectContaining({
+          channelId: "copilot-vscode:copilot-extension",
+          provider: "installer-command",
+          installCommand: ["code", "--install-extension", "GitHub.copilot"]
+        }),
+        expect.objectContaining({
+          channelId: "copilot-vscode:copilot-chat-extension",
+          provider: "installer-command",
+          installCommand: ["code", "--install-extension", "GitHub.copilot-chat"]
         })
       ])
     );

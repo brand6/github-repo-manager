@@ -1,4 +1,22 @@
-export type ToolId = "codex" | "claude" | "opencode" | "qwen" | "qoder" | "copilot";
+export const toolIds = [
+  "codex",
+  "claude",
+  "opencode",
+  "qwen",
+  "qoder",
+  "copilot",
+  "gemini",
+  "cursor",
+  "antigravity",
+  "windsurf",
+  "junie",
+  "copilot_vscode"
+] as const;
+export type ToolId = (typeof toolIds)[number];
+
+export function isToolId(value: unknown): value is ToolId {
+  return typeof value === "string" && (toolIds as readonly string[]).includes(value);
+}
 export type RefreshMode = "incremental" | "full";
 export const terminalModes = ["new-window", "per-tool", "per-project"] as const;
 export type TerminalMode = (typeof terminalModes)[number];
@@ -327,7 +345,12 @@ export interface ProjectLocalSkillMigrationResult {
 }
 
 export type McpHubTransport = "stdio" | "http";
-export type McpHubTargetToolId = Extract<ToolId, "claude" | "codex" | "opencode">;
+export const mcpHubTargetToolIds = ["claude", "codex", "opencode", "gemini", "cursor", "copilot_vscode", "antigravity", "junie"] as const;
+export type McpHubTargetToolId = (typeof mcpHubTargetToolIds)[number];
+
+export function isMcpHubTargetToolId(value: unknown): value is McpHubTargetToolId {
+  return typeof value === "string" && (mcpHubTargetToolIds as readonly string[]).includes(value);
+}
 
 export interface McpHubServer {
   serverId: string;

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { defaultAppConfig } from "../src/server/core/bootstrap.js";
 import { buildTerminalHost, launchInTerminal, terminalWindowTarget } from "../src/server/launch/terminal.js";
 import { adapterFor, claudeAdapter, codexAdapter, opencodeAdapter, projectVisibleToolStatuses } from "../src/server/tools/adapters.js";
-import type { SessionEntry, ToolId } from "../src/shared/types.js";
+import { toolIds, type SessionEntry, type ToolId } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 
 let directory: string | null = null;
@@ -45,7 +45,8 @@ describe("tool adapters and terminal launcher", () => {
 
   it("registers MVP-B tools behind the shared adapter interface", () => {
     const config = defaultAppConfig();
-    const ids: ToolId[] = ["codex", "claude", "opencode", "qwen", "qoder", "copilot"];
+    const fullLifecycleIds: ToolId[] = ["codex", "claude", "opencode", "qwen", "qoder", "copilot"];
+    const launchOnlyIds: ToolId[] = ["gemini", "cursor", "antigravity", "windsurf", "junie"];
     const session: SessionEntry = {
       id: "tool:s1",
       toolId: "opencode",
@@ -62,8 +63,8 @@ describe("tool adapters and terminal launcher", () => {
       indexedAt: "2026-06-01T00:00:00Z"
     };
 
-    expect(Object.keys(config.tools).sort()).toEqual([...ids].sort());
-    for (const id of ids) {
+    expect(Object.keys(config.tools).sort()).toEqual([...toolIds].sort());
+    for (const id of [...fullLifecycleIds, ...launchOnlyIds]) {
       expect(adapterFor(id).buildNewSessionCommand(config, "E:\\repo").cwd).toBe("E:\\repo");
     }
     expect(adapterFor("opencode").buildResumeCommand(config, { ...session, toolId: "opencode" }).args).toEqual(["--session", "s1"]);
@@ -74,8 +75,28 @@ describe("tool adapters and terminal launcher", () => {
 
   it("exposes project-visible tools from adapter capabilities instead of hard-coded ids", () => {
     const statuses = projectVisibleToolStatuses(defaultAppConfig());
-    expect(statuses.map((status) => status.toolId)).toEqual(["codex", "claude", "opencode", "qwen", "qoder", "copilot"]);
-    expect(statuses.every((status) => status.capabilities.launchNew && status.capabilities.scanHistory && status.capabilities.resume)).toBe(true);
+    expect(statuses.map((status) => status.toolId)).toEqual([
+      "codex",
+      "claude",
+      "opencode",
+      "qwen",
+      "qoder",
+      "copilot",
+      "gemini",
+      "cursor",
+      "antigravity",
+      "windsurf",
+      "junie"
+    ]);
+    expect(statuses.every((status) => status.capabilities.launchNew)).toBe(true);
+    expect(statuses.filter((status) => status.capabilities.scanHistory).map((status) => status.toolId)).toEqual([
+      "codex",
+      "claude",
+      "opencode",
+      "qwen",
+      "qoder",
+      "copilot"
+    ]);
   });
 
   it("points OpenCode history scanning at the SQLite database by default", () => {

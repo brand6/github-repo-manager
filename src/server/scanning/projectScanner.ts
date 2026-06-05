@@ -39,7 +39,15 @@ const AI_TRACE_NAMES: Array<{ name: string; tool: ToolId }> = [
   { name: "QWEN.md", tool: "qwen" },
   { name: ".qoder", tool: "qoder" },
   { name: "QODER.md", tool: "qoder" },
-  { name: "copilot-instructions.md", tool: "copilot" }
+  { name: "copilot-instructions.md", tool: "copilot" },
+  { name: ".gemini", tool: "gemini" },
+  { name: "GEMINI.md", tool: "gemini" },
+  { name: ".cursor", tool: "cursor" },
+  { name: ".cursorrules", tool: "cursor" },
+  { name: "mcp_config.json", tool: "antigravity" },
+  { name: ".windsurf", tool: "windsurf" },
+  { name: ".junie", tool: "junie" },
+  { name: "mcp.json", tool: "copilot_vscode" }
 ];
 
 export interface ProjectScanRequest {
@@ -159,9 +167,14 @@ function traceCandidates(root: string): Array<{ path: string; tool: ToolId }> {
 
       const trace = AI_TRACE_NAMES.find((item) => item.name.toLowerCase() === entry.name.toLowerCase());
       if (trace) {
-        const traceRoot = trace.name === "copilot-instructions.md" && path.basename(current.directory) === ".github"
-          ? path.dirname(current.directory)
-          : current.directory;
+        if (trace.name === "mcp_config.json" && path.basename(current.directory).toLowerCase() !== ".agents") continue;
+        if (trace.name === "mcp.json" && path.basename(current.directory).toLowerCase() !== ".vscode") continue;
+        const traceRoot =
+          (trace.name === "copilot-instructions.md" && path.basename(current.directory) === ".github") ||
+          trace.name === "mcp_config.json" ||
+          trace.name === "mcp.json"
+            ? path.dirname(current.directory)
+            : current.directory;
         results.push({ path: traceRoot, tool: trace.tool });
       }
     }

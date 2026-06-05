@@ -2389,6 +2389,7 @@ function ProjectDetailView({
         <div className="detail-management-body">
           <ProjectToolTargetSelector
             targets={projectToolTargets}
+            tools={tools}
             busy={busy}
             onUpdate={onUpdateProjectTools}
           />
@@ -2552,16 +2553,23 @@ function RepairSignalPanel({ signals }: { signals: RepairSignal[] }) {
 
 function ProjectToolTargetSelector({
   targets,
+  tools = [],
   busy,
   onUpdate
 }: {
   targets: ProjectToolTarget[];
+  tools?: ToolStatus[];
   busy: boolean;
   onUpdate: (toolIds: ToolId[]) => void;
 }) {
-  const enabledToolIds = targets.filter((target) => target.enabled).map((target) => target.toolId);
+  const visibleTargets = useMemo(() => {
+    if (tools.length === 0) return targets;
+    const launchableToolIds = new Set(tools.filter(isLaunchableProjectTool).map((tool) => tool.toolId));
+    return targets.filter((target) => launchableToolIds.has(target.toolId));
+  }, [targets, tools]);
+  const enabledToolIds = visibleTargets.filter((target) => target.enabled).map((target) => target.toolId);
 
-  if (targets.length === 0) return null;
+  if (visibleTargets.length === 0) return null;
 
   function toggleTool(toolId: ToolId, enabled: boolean) {
     const next = enabled ? [...enabledToolIds, toolId] : enabledToolIds.filter((id) => id !== toolId);
@@ -2572,12 +2580,12 @@ function ProjectToolTargetSelector({
     <section className="project-tool-targets" aria-label="项目使用工具">
       <span className="field-label">项目使用工具</span>
       <div className="tool-chip-list">
-        {targets.map((target) => (
+        {visibleTargets.map((target) => (
           <label className="tool-target-chip" key={target.toolId} title={target.reason ?? target.skillDirectory ?? target.toolId}>
             <input
               type="checkbox"
               checked={target.enabled}
-              disabled={busy || (!target.supported && !target.enabled)}
+              disabled={busy}
               onChange={(event) => toggleTool(target.toolId, event.target.checked)}
             />
             <span>{target.toolId}</span>
@@ -2761,7 +2769,7 @@ function uniqueMcpTargetToolIds(toolIds: McpHubTargetToolId[]): McpHubTargetTool
 }
 
 function isLaunchableProjectTool(tool: ToolStatus): boolean {
-  return tool.visibleInProjectUi && tool.supported && tool.available;
+  return tool.visibleInProjectUi && tool.capabilities.launchNew && tool.available;
 }
 
 function SessionGroup({

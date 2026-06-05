@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import type { AppConfig, RefreshResult, ToolId } from "../../shared/types.js";
+import { isToolId, type AppConfig, type RefreshResult, type ToolId } from "../../shared/types.js";
 import { nowIso } from "../core/time.js";
 import { normalizeFsPath } from "../core/pathUtils.js";
 import type { AppEventHub } from "../events/appEvents.js";
@@ -313,10 +313,6 @@ function isPersistedTrackedSource(value: unknown): value is TrackedSource {
     typeof source.fingerprint?.mtimeMs === "number" &&
     typeof source.fingerprint.size === "number"
   );
-}
-
-function isToolId(value: unknown): value is ToolId {
-  return value === "codex" || value === "claude" || value === "opencode" || value === "qwen" || value === "qoder" || value === "copilot";
 }
 
 function isStillConfigured(source: TrackedSource, config: AppConfig): boolean {

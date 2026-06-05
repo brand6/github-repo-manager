@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isTerminalMode, type AppConfig, type BootstrapState, type ToolId } from "../../shared/types.js";
+import { isTerminalMode, toolIds, type AppConfig, type BootstrapState, type ToolId } from "../../shared/types.js";
 
 export interface BootstrapFile {
   version: 1;
@@ -40,7 +40,13 @@ export function defaultAppConfig(): AppConfig {
     opencode: { command: "opencode" },
     qwen: { command: "qwen" },
     qoder: { command: "qodercli" },
-    copilot: { command: "copilot" }
+    copilot: { command: "copilot" },
+    gemini: { command: "gemini" },
+    cursor: { command: "cursor-agent" },
+    antigravity: { command: "agy" },
+    windsurf: { command: "windsurf" },
+    junie: { command: "junie" },
+    copilot_vscode: { command: "code" }
   };
   return { version: 1, tools, terminal: { mode: "new-window" }, skillhub: { rootDir: "" } };
 }
@@ -78,14 +84,7 @@ export function normalizeConfig(config: AppConfig, dataDir?: string): AppConfig 
         : defaults.skillhub.rootDir;
   return {
     version: 1,
-    tools: {
-      codex: { ...defaults.tools.codex, ...(config.tools?.codex ?? {}) },
-      claude: { ...defaults.tools.claude, ...(config.tools?.claude ?? {}) },
-      opencode: { ...defaults.tools.opencode, ...(config.tools?.opencode ?? {}) },
-      qwen: { ...defaults.tools.qwen, ...(config.tools?.qwen ?? {}) },
-      qoder: { ...defaults.tools.qoder, ...(config.tools?.qoder ?? {}) },
-      copilot: { ...defaults.tools.copilot, ...(config.tools?.copilot ?? {}) }
-    },
+    tools: Object.fromEntries(toolIds.map((toolId) => [toolId, { ...defaults.tools[toolId], ...(config.tools?.[toolId] ?? {}) }])) as AppConfig["tools"],
     terminal: { mode: isTerminalMode(config.terminal?.mode) ? config.terminal.mode : defaults.terminal.mode },
     skillhub: { rootDir: configuredSkillHubRoot }
   };

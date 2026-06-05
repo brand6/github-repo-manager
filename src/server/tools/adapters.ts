@@ -39,6 +39,14 @@ function unsupportedSkillDirectory(reason: string) {
   return { supported: false, directory: null, reason };
 }
 
+function launchOnlyCapabilities(): ToolStatus["capabilities"] {
+  return { launchNew: true, scanHistory: false, resume: false };
+}
+
+function unsupportedResume(toolName: string): LaunchCommand {
+  throw new Error(`${toolName} 暂不支持从本系统恢复会话`);
+}
+
 export const codexAdapter: ToolAdapter = {
   id: "codex",
   parserVersion: "codex-jsonl-v1",
@@ -201,13 +209,157 @@ export const copilotAdapter: ToolAdapter = {
   }
 };
 
+export const geminiAdapter: ToolAdapter = {
+  id: "gemini",
+  parserVersion: "gemini-unsupported-v1",
+  sourceFormat: "unsupported",
+  capabilities: launchOnlyCapabilities(),
+  visibleInProjectUi: true,
+  defaultSessionSources(): string[] {
+    return [];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".gemini", "skills");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: config.tools.gemini.command, args: [], cwd };
+  },
+  buildResumeCommand(): LaunchCommand {
+    return unsupportedResume("Gemini CLI");
+  }
+};
+
+export const cursorAdapter: ToolAdapter = {
+  id: "cursor",
+  parserVersion: "cursor-unsupported-v1",
+  sourceFormat: "unsupported",
+  capabilities: launchOnlyCapabilities(),
+  visibleInProjectUi: true,
+  defaultSessionSources(): string[] {
+    return [];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".cursor", "skills");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: config.tools.cursor.command, args: [], cwd };
+  },
+  buildResumeCommand(): LaunchCommand {
+    return unsupportedResume("Cursor Agent");
+  }
+};
+
+export const antigravityAdapter: ToolAdapter = {
+  id: "antigravity",
+  parserVersion: "antigravity-unsupported-v1",
+  sourceFormat: "unsupported",
+  capabilities: launchOnlyCapabilities(),
+  visibleInProjectUi: true,
+  defaultSessionSources(): string[] {
+    return [];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".agents", "skills");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: config.tools.antigravity.command, args: [], cwd };
+  },
+  buildResumeCommand(): LaunchCommand {
+    return unsupportedResume("Antigravity");
+  }
+};
+
+export const windsurfAdapter: ToolAdapter = {
+  id: "windsurf",
+  parserVersion: "windsurf-unsupported-v1",
+  sourceFormat: "unsupported",
+  capabilities: launchOnlyCapabilities(),
+  visibleInProjectUi: true,
+  defaultSessionSources(): string[] {
+    return [];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".windsurf", "skills");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: config.tools.windsurf.command, args: [], cwd };
+  },
+  buildResumeCommand(): LaunchCommand {
+    return unsupportedResume("Windsurf");
+  }
+};
+
+export const junieAdapter: ToolAdapter = {
+  id: "junie",
+  parserVersion: "junie-unsupported-v1",
+  sourceFormat: "unsupported",
+  capabilities: launchOnlyCapabilities(),
+  visibleInProjectUi: true,
+  defaultSessionSources(): string[] {
+    return [];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".junie", "skills");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: config.tools.junie.command, args: [], cwd };
+  },
+  buildResumeCommand(): LaunchCommand {
+    return unsupportedResume("Junie");
+  }
+};
+
+export const copilotVscodeAdapter: ToolAdapter = {
+  id: "copilot_vscode",
+  parserVersion: "copilot-vscode-unsupported-v1",
+  sourceFormat: "unsupported",
+  capabilities: { launchNew: false, scanHistory: false, resume: false },
+  visibleInProjectUi: false,
+  defaultSessionSources(): string[] {
+    return [];
+  },
+  skillTarget() {
+    return unsupportedSkillDirectory("Copilot VS Code 暂无项目级 skill link 目录映射");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: config.tools.copilot_vscode.command, args: [], cwd };
+  },
+  buildResumeCommand(): LaunchCommand {
+    return unsupportedResume("Copilot VS Code");
+  }
+};
+
 export const toolAdapters: Record<ToolId, ToolAdapter> = {
   codex: codexAdapter,
   claude: claudeAdapter,
   opencode: opencodeAdapter,
   qwen: qwenAdapter,
   qoder: qoderAdapter,
-  copilot: copilotAdapter
+  copilot: copilotAdapter,
+  gemini: geminiAdapter,
+  cursor: cursorAdapter,
+  antigravity: antigravityAdapter,
+  windsurf: windsurfAdapter,
+  junie: junieAdapter,
+  copilot_vscode: copilotVscodeAdapter
 };
 
 export function listToolStatuses(config: AppConfig): ToolStatus[] {
@@ -216,6 +368,10 @@ export function listToolStatuses(config: AppConfig): ToolStatus[] {
 
 export function projectVisibleToolStatuses(config: AppConfig): ToolStatus[] {
   return listToolStatuses(config).filter((tool) => tool.visibleInProjectUi);
+}
+
+export function projectConfigurableToolStatuses(config: AppConfig): ToolStatus[] {
+  return listToolStatuses(config).filter((tool) => tool.visibleInProjectUi && tool.capabilities.launchNew && tool.available);
 }
 
 export function adapterFor(toolId: ToolId): ToolAdapter {

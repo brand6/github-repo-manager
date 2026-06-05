@@ -1113,6 +1113,43 @@ describe("HomePage", () => {
     expect(onApplyRuleSync).toHaveBeenCalledWith("agents-to-claude");
   });
 
+  it("only shows installed CLI tools in project configuration", () => {
+    const project = projectFixture("E:\\old");
+
+    render(
+      <ProjectDetailView
+        project={project}
+        detail={detailFixture(project)}
+        tools={[
+          toolStatusFixture("codex"),
+          {
+            ...toolStatusFixture("qwen"),
+            available: false,
+            reason: "未找到命令：qwen"
+          }
+        ]}
+        projectToolTargets={[
+          projectToolTargetFixture(project, "codex", true),
+          projectToolTargetFixture(project, "qwen", true)
+        ]}
+        query=""
+        warnings={[]}
+        busy={false}
+        setQuery={vi.fn()}
+        onLaunch={vi.fn()}
+        onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
+        repairCandidates={[]}
+        onRepairProject={vi.fn()}
+        onRelocateProject={vi.fn()}
+      />
+    );
+
+    const targetSection = screen.getByRole("region", { name: "项目使用工具" });
+    expect(within(targetSection).getByRole("checkbox", { name: "codex" })).toBeInTheDocument();
+    expect(within(targetSection).queryByRole("checkbox", { name: "qwen" })).not.toBeInTheDocument();
+  });
+
   it("hides unavailable CLI tools from the new session picker", () => {
     const project = projectFixture("E:\\old");
     const onLaunch = vi.fn();
