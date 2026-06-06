@@ -1,4 +1,10 @@
 import type {
+  AgentHubApplyConflictMode,
+  AgentHubDisableMode,
+  AgentHubImportConflictResolution,
+  AgentHubImportResult,
+  AgentHubList,
+  AgentHubToolId,
   AppConfig,
   BootstrapState,
   CliHubCli,
@@ -36,6 +42,8 @@ import type {
   ProjectHookState,
   ProjectHookToolState,
   ProjectLocalMcpMigrationMode,
+  ProjectLocalAgentMigrationTarget,
+  ProjectLocalAgentMigrationResult,
   ProjectLocalMcpMigrationResult,
   ProjectLocalSkillMigrationMode,
   ProjectLocalSkillMigrationTarget,
@@ -44,6 +52,10 @@ import type {
   ProjectMcpApplyResult,
   ProjectMcpDisableResult,
   ProjectMcpState,
+  ProjectAgentApplyResult,
+  ProjectAgentDisableResult,
+  ProjectAgentState,
+  ProjectAgentSyncResult,
   ProjectPluginApplyResult,
   ProjectPluginState,
   ProjectRepairCandidate,
@@ -146,6 +158,14 @@ export const client = {
   deleteSkillHubSkill: (skillId: string) => apiDelete<SkillHubDeletePreview>(`/api/skillhub/skills/${encodeURIComponent(skillId)}`),
   openSkillHubSkill: (skillId: string, target: SkillHubOpenTarget) =>
     apiPost<LocalOpenResponse>(`/api/skillhub/skills/${encodeURIComponent(skillId)}/open`, { target }),
+  agenthub: (query = "") => apiGet<AgentHubList>(`/api/agenthub${query ? `?query=${encodeURIComponent(query)}` : ""}`),
+  importBuiltInAgencyAgents: () => apiPost<AgentHubImportResult>("/api/agenthub/import/builtin/agency-agents"),
+  importLocalAgents: (path: string, sourceTruthTool: AgentHubToolId, conflictResolutions: AgentHubImportConflictResolution[] = []) =>
+    apiPost<AgentHubImportResult>("/api/agenthub/import/local", { path, sourceTruthTool, conflictResolutions }),
+  openAgentHubAgent: (agentId: string, target: SkillHubOpenTarget) =>
+    apiPost<LocalOpenResponse>(`/api/agenthub/agents/${encodeURIComponent(agentId)}/open`, { target }),
+  reparseAgentHubAgent: (agentId: string) => apiPost(`/api/agenthub/agents/${encodeURIComponent(agentId)}/reparse`),
+  deleteAgentHubSource: (sourceId: string) => apiDelete(`/api/agenthub/sources/${encodeURIComponent(sourceId)}`),
   clihub: () => apiGet<CliHubList>("/api/clihub"),
   refreshCliHubDiscovery: (cliId?: string) => apiPost<CliHubList>("/api/clihub/discovery/refresh", { ...(cliId ? { cliId } : {}) }),
   addCliHubLocalPath: (executablePath: string, displayName?: string, commandName?: string) =>
@@ -231,6 +251,43 @@ export const client = {
       mode,
       ...(targetRootPath ? { targetRootPath } : {}),
       ...(target ? { target } : {})
+    }),
+  projectAgents: (id: string, targetRootPath?: string, query = "") =>
+    apiGet<ProjectAgentState>(`/api/projects/${id}/agents${projectTargetQuery(targetRootPath, query)}`),
+  applyProjectAgent: (id: string, agentId: string, toolId: AgentHubToolId, targetRootPath?: string, conflictMode?: AgentHubApplyConflictMode | null) =>
+    apiPut<ProjectAgentApplyResult>(`/api/projects/${id}/agent-targets/${encodeURIComponent(agentId)}/${encodeURIComponent(toolId)}`, {
+      conflictMode,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  syncProjectAgent: (id: string, bindingId: string, targetRootPath?: string) =>
+    apiPost<ProjectAgentApplyResult>(`/api/projects/${id}/agent-bindings/${encodeURIComponent(bindingId)}/sync`, {
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  syncProjectAgents: (id: string, targetRootPath?: string) =>
+    apiPost<ProjectAgentSyncResult>(`/api/projects/${id}/agents/sync`, {
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  disableProjectAgent: (id: string, bindingId: string, targetRootPath?: string, mode?: AgentHubDisableMode | null) => {
+    const params = new URLSearchParams();
+    if (targetRootPath) params.set("targetRootPath", targetRootPath);
+    if (mode) params.set("mode", mode);
+    const query = params.toString();
+    return apiDelete<ProjectAgentDisableResult>(`/api/projects/${id}/agent-bindings/${encodeURIComponent(bindingId)}${query ? `?${query}` : ""}`);
+  },
+  migrateProjectLocalAgent: (
+    id: string,
+    toolId: AgentHubToolId,
+    outputPath: string,
+    target: ProjectLocalAgentMigrationTarget,
+    targetRootPath?: string,
+    conflictResolution?: AgentHubImportConflictResolution | null
+  ) =>
+    apiPost<ProjectLocalAgentMigrationResult>(`/api/projects/${id}/local-agents/migrate`, {
+      toolId,
+      outputPath,
+      target,
+      conflictResolution,
+      ...(targetRootPath ? { targetRootPath } : {})
     }),
   projectPlugins: (id: string, targetRootPath?: string) =>
     apiGet<ProjectPluginState>(`/api/projects/${id}/plugins${projectTargetQuery(targetRootPath)}`),

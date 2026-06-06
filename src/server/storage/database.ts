@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  AgentHubAgent,
+  AgentHubSource,
+  AgentHubToolId,
   CliHubCli,
   HookHubSupportedToolId,
   HookHubSuite,
@@ -11,6 +14,7 @@ import type {
   PluginHubPlugin,
   PluginHubSource,
   Project,
+  ProjectAgentTarget,
   ProjectHookBinding,
   ProjectMcpBinding,
   ProjectPluginBinding,
@@ -229,6 +233,48 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_skillhub_skills_source ON skillhub_skills(source_id);
       CREATE INDEX IF NOT EXISTS idx_skillhub_skills_folder ON skillhub_skills(folder_name);
 
+      CREATE TABLE IF NOT EXISTS agenthub_sources (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        label TEXT NOT NULL,
+        input_path TEXT,
+        resolved_path TEXT,
+        source_truth_tool TEXT NOT NULL,
+        imported_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agenthub_sources_resolved_truth
+        ON agenthub_sources(resolved_path, source_truth_tool)
+        WHERE resolved_path IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS agenthub_agents (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agenthub_sources(id) ON DELETE CASCADE,
+        source_type TEXT NOT NULL,
+        source_truth_tool TEXT NOT NULL,
+        truth_role TEXT NOT NULL,
+        source_format TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        native_path TEXT NOT NULL UNIQUE,
+        library_relative_path TEXT NOT NULL UNIQUE,
+        source_relative_path TEXT,
+        category TEXT,
+        projection_json TEXT NOT NULL,
+        native_metadata_json TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(source_id, slug)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_agenthub_agents_source ON agenthub_agents(source_id);
+      CREATE INDEX IF NOT EXISTS idx_agenthub_agents_slug ON agenthub_agents(slug);
+
       CREATE TABLE IF NOT EXISTS pluginhub_sources (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
@@ -368,6 +414,23 @@ export class AppDatabase {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (project_id, normalized_target_root_path, tool_id)
       );
+
+      CREATE TABLE IF NOT EXISTS project_agent_targets (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_root_path TEXT NOT NULL,
+        normalized_target_root_path TEXT NOT NULL,
+        tool_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL REFERENCES agenthub_agents(id) ON DELETE CASCADE,
+        output_path TEXT NOT NULL,
+        normalized_output_path TEXT NOT NULL,
+        applied_source_hash TEXT NOT NULL,
+        applied_output_hash TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, normalized_target_root_path, tool_id, normalized_output_path)
+      );
     `);
 
     this.ensureProjectSkillTargetsLinkPathKey();
@@ -384,6 +447,12 @@ export class AppDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_project_hook_bindings_suite
         ON project_hook_bindings(suite_id);
+
+      CREATE INDEX IF NOT EXISTS idx_project_agent_targets_agent
+        ON project_agent_targets(agent_id);
+
+      CREATE INDEX IF NOT EXISTS idx_project_agent_targets_project
+        ON project_agent_targets(project_id, normalized_target_root_path, tool_id);
     `);
 
     this.db.prepare("INSERT OR REPLACE INTO schema_metadata (key, value) VALUES (?, ?)").run("schema_version", "1");
@@ -713,6 +782,175 @@ export class AppDatabase {
 
   deleteSkillHubSource(sourceId: string): boolean {
     const result = this.db.prepare("DELETE FROM skillhub_sources WHERE id = ?").run(sourceId);
+    return Number(result.changes) > 0;
+  }
+
+  listAgentHubSources(): AgentHubSource[] {
+    return this.db
+      .prepare("SELECT * FROM agenthub_sources ORDER BY type ASC, label ASC, updated_at DESC")
+      .all()
+      .map((row) => this.agentHubSourceFromRow(row));
+  }
+
+  getAgentHubSource(sourceId: string): AgentHubSource | null {
+    const row = this.db.prepare("SELECT * FROM agenthub_sources WHERE id = ?").get(sourceId);
+    return row ? this.agentHubSourceFromRow(row) : null;
+  }
+
+  getAgentHubSourceByResolvedPath(resolvedPath: string, sourceTruthTool: AgentHubToolId): AgentHubSource | null {
+    const row = this.db
+      .prepare("SELECT * FROM agenthub_sources WHERE resolved_path = ? AND source_truth_tool = ?")
+      .get(normalizeFsPath(resolvedPath), sourceTruthTool);
+    return row ? this.agentHubSourceFromRow(row) : null;
+  }
+
+  upsertAgentHubSource(input: Omit<AgentHubSource, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): AgentHubSource {
+    const existing = this.getAgentHubSource(input.id);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO agenthub_sources (
+          id, type, label, input_path, resolved_path, source_truth_tool,
+          imported_at, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          type = excluded.type,
+          label = excluded.label,
+          input_path = excluded.input_path,
+          resolved_path = excluded.resolved_path,
+          source_truth_tool = excluded.source_truth_tool,
+          imported_at = excluded.imported_at,
+          metadata_json = excluded.metadata_json,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.id,
+        input.type,
+        input.label,
+        input.inputPath,
+        input.resolvedPath ? normalizeFsPath(input.resolvedPath) : null,
+        input.sourceTruthTool,
+        input.importedAt,
+        json(input.metadata),
+        createdAt,
+        updatedAt
+      );
+    const source = this.getAgentHubSource(input.id);
+    if (!source) throw new Error("Failed to upsert AgentHub source");
+    return source;
+  }
+
+  deleteAgentHubSource(sourceId: string): boolean {
+    const result = this.db.prepare("DELETE FROM agenthub_sources WHERE id = ?").run(sourceId);
+    return Number(result.changes) > 0;
+  }
+
+  listAgentHubAgents(query = ""): AgentHubAgent[] {
+    const sources = new Map(this.listAgentHubSources().map((source) => [source.id, source]));
+    const normalizedQuery = query.trim().toLowerCase();
+    return this.db
+      .prepare("SELECT * FROM agenthub_agents ORDER BY source_id ASC, category ASC, name ASC, slug ASC")
+      .all()
+      .map((row) => this.agentHubAgentFromRow(row, sources))
+      .filter((agent) => {
+        if (!normalizedQuery) return true;
+        return [
+          agent.name,
+          agent.description ?? "",
+          agent.slug,
+          agent.source?.label ?? "",
+          agent.sourceTruthTool,
+          agent.truthRole,
+          agent.nativePath,
+          agent.sourceRelativePath ?? "",
+          agent.category ?? ""
+        ]
+          .join("\n")
+          .toLowerCase()
+          .includes(normalizedQuery);
+      });
+  }
+
+  listAgentHubAgentsForSource(sourceId: string): AgentHubAgent[] {
+    const sources = new Map(this.listAgentHubSources().map((source) => [source.id, source]));
+    return this.db
+      .prepare("SELECT * FROM agenthub_agents WHERE source_id = ? ORDER BY category ASC, name ASC, slug ASC")
+      .all(sourceId)
+      .map((row) => this.agentHubAgentFromRow(row, sources));
+  }
+
+  getAgentHubAgent(agentId: string): AgentHubAgent | null {
+    const sources = new Map(this.listAgentHubSources().map((source) => [source.id, source]));
+    const row = this.db.prepare("SELECT * FROM agenthub_agents WHERE id = ?").get(agentId);
+    return row ? this.agentHubAgentFromRow(row, sources) : null;
+  }
+
+  getAgentHubAgentBySourceSlug(sourceId: string, slug: string): AgentHubAgent | null {
+    const sources = new Map(this.listAgentHubSources().map((source) => [source.id, source]));
+    const row = this.db.prepare("SELECT * FROM agenthub_agents WHERE source_id = ? AND slug = ?").get(sourceId, slug);
+    return row ? this.agentHubAgentFromRow(row, sources) : null;
+  }
+
+  upsertAgentHubAgent(input: Omit<AgentHubAgent, "source" | "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): AgentHubAgent {
+    const existing = this.getAgentHubAgent(input.id);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO agenthub_agents (
+          id, source_id, source_type, source_truth_tool, truth_role, source_format,
+          slug, name, description, native_path, library_relative_path,
+          source_relative_path, category, projection_json, native_metadata_json,
+          content_hash, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          source_id = excluded.source_id,
+          source_type = excluded.source_type,
+          source_truth_tool = excluded.source_truth_tool,
+          truth_role = excluded.truth_role,
+          source_format = excluded.source_format,
+          slug = excluded.slug,
+          name = excluded.name,
+          description = excluded.description,
+          native_path = excluded.native_path,
+          library_relative_path = excluded.library_relative_path,
+          source_relative_path = excluded.source_relative_path,
+          category = excluded.category,
+          projection_json = excluded.projection_json,
+          native_metadata_json = excluded.native_metadata_json,
+          content_hash = excluded.content_hash,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.id,
+        input.sourceId,
+        input.sourceType,
+        input.sourceTruthTool,
+        input.truthRole,
+        input.sourceFormat,
+        input.slug,
+        input.name,
+        input.description,
+        input.nativePath,
+        input.libraryRelativePath,
+        input.sourceRelativePath,
+        input.category,
+        json(input.projection),
+        json(input.nativeMetadata),
+        input.contentHash,
+        createdAt,
+        updatedAt
+      );
+    const agent = this.getAgentHubAgent(input.id);
+    if (!agent) throw new Error("Failed to upsert AgentHub agent");
+    return agent;
+  }
+
+  deleteAgentHubAgent(agentId: string): boolean {
+    const result = this.db.prepare("DELETE FROM agenthub_agents WHERE id = ?").run(agentId);
     return Number(result.changes) > 0;
   }
 
@@ -1157,6 +1395,113 @@ export class AppDatabase {
       )
       .run(projectId, normalizeFsPath(targetRootPath), toolId);
     return Number(result.changes) > 0;
+  }
+
+  listProjectAgentTargets(projectId?: string, targetRootPath?: string): ProjectAgentTarget[] {
+    const agents = new Map(this.listAgentHubAgents().map((agent) => [agent.id, agent]));
+    if (projectId && targetRootPath) {
+      return this.db
+        .prepare(
+          `SELECT * FROM project_agent_targets
+           WHERE project_id = ? AND normalized_target_root_path = ?
+           ORDER BY tool_id ASC, output_path ASC`
+        )
+        .all(projectId, normalizeFsPath(targetRootPath))
+        .map((row) => this.projectAgentTargetFromRow(row, agents));
+    }
+    if (projectId) {
+      return this.db
+        .prepare("SELECT * FROM project_agent_targets WHERE project_id = ? ORDER BY normalized_target_root_path ASC, tool_id ASC, output_path ASC")
+        .all(projectId)
+        .map((row) => this.projectAgentTargetFromRow(row, agents));
+    }
+    return this.db
+      .prepare("SELECT * FROM project_agent_targets ORDER BY project_id ASC, normalized_target_root_path ASC, tool_id ASC, output_path ASC")
+      .all()
+      .map((row) => this.projectAgentTargetFromRow(row, agents));
+  }
+
+  listProjectAgentTargetsForAgent(agentId: string): ProjectAgentTarget[] {
+    const agents = new Map(this.listAgentHubAgents().map((agent) => [agent.id, agent]));
+    return this.db
+      .prepare("SELECT * FROM project_agent_targets WHERE agent_id = ? ORDER BY project_id ASC, normalized_target_root_path ASC, tool_id ASC")
+      .all(agentId)
+      .map((row) => this.projectAgentTargetFromRow(row, agents));
+  }
+
+  getProjectAgentTarget(bindingId: string): ProjectAgentTarget | null {
+    const agents = new Map(this.listAgentHubAgents().map((agent) => [agent.id, agent]));
+    const row = this.db.prepare("SELECT * FROM project_agent_targets WHERE id = ?").get(bindingId);
+    return row ? this.projectAgentTargetFromRow(row, agents) : null;
+  }
+
+  getProjectAgentTargetByOutputPath(projectId: string, targetRootPath: string, toolId: AgentHubToolId, outputPath: string): ProjectAgentTarget | null {
+    const agents = new Map(this.listAgentHubAgents().map((agent) => [agent.id, agent]));
+    const row = this.db
+      .prepare(
+        `SELECT * FROM project_agent_targets
+         WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ? AND normalized_output_path = ?`
+      )
+      .get(projectId, normalizeFsPath(targetRootPath), toolId, normalizeFsPath(outputPath));
+    return row ? this.projectAgentTargetFromRow(row, agents) : null;
+  }
+
+  upsertProjectAgentTarget(
+    input: Omit<ProjectAgentTarget, "id" | "agent" | "createdAt" | "updatedAt"> & { id?: string; createdAt?: string; updatedAt?: string }
+  ): ProjectAgentTarget {
+    const normalizedTargetRootPath = normalizeFsPath(input.targetRootPath);
+    const normalizedOutputPath = normalizeFsPath(input.outputPath);
+    const existing = input.id
+      ? this.db.prepare("SELECT id, created_at FROM project_agent_targets WHERE id = ?").get(input.id)
+      : this.db
+          .prepare(
+            `SELECT id, created_at FROM project_agent_targets
+             WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ? AND normalized_output_path = ?`
+          )
+          .get(input.projectId, normalizedTargetRootPath, input.toolId, normalizedOutputPath);
+    const timestamp = nowIso();
+    const id = String(existing?.id ?? input.id ?? crypto.randomUUID());
+    const createdAt = String(input.createdAt ?? existing?.created_at ?? timestamp);
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO project_agent_targets (
+          id, project_id, target_root_path, normalized_target_root_path, tool_id,
+          agent_id, output_path, normalized_output_path, applied_source_hash,
+          applied_output_hash, applied_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.projectId,
+        input.targetRootPath,
+        normalizedTargetRootPath,
+        input.toolId,
+        input.agentId,
+        input.outputPath,
+        normalizedOutputPath,
+        input.appliedSourceHash,
+        input.appliedOutputHash,
+        input.appliedAt,
+        createdAt,
+        updatedAt
+      );
+    const binding = this.getProjectAgentTarget(id);
+    if (!binding) throw new Error("Failed to upsert project AgentHub target");
+    return binding;
+  }
+
+  deleteProjectAgentTarget(bindingId: string): ProjectAgentTarget | null {
+    const binding = this.getProjectAgentTarget(bindingId);
+    if (!binding) return null;
+    this.db.prepare("DELETE FROM project_agent_targets WHERE id = ?").run(bindingId);
+    return binding;
+  }
+
+  deleteProjectAgentTargetsForAgent(agentId: string): ProjectAgentTarget[] {
+    const targets = this.listProjectAgentTargetsForAgent(agentId);
+    this.db.prepare("DELETE FROM project_agent_targets WHERE agent_id = ?").run(agentId);
+    return targets;
   }
 
   listProjectMcpBindings(projectId?: string, targetRootPath?: string): ProjectMcpBinding[] {
@@ -1834,6 +2179,52 @@ export class AppDatabase {
     };
   }
 
+  private agentHubSourceFromRow(row: Row): AgentHubSource {
+    return {
+      id: String(row.id),
+      type: String(row.type) as AgentHubSource["type"],
+      label: String(row.label),
+      inputPath: row.input_path === null ? null : String(row.input_path),
+      resolvedPath: row.resolved_path === null ? null : String(row.resolved_path),
+      sourceTruthTool: String(row.source_truth_tool) as AgentHubToolId,
+      importedAt: String(row.imported_at),
+      metadata: parseJson<Record<string, unknown>>(String(row.metadata_json), {}),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
+  private agentHubAgentFromRow(row: Row, sources: Map<string, AgentHubSource>): AgentHubAgent {
+    const sourceId = String(row.source_id);
+    return {
+      id: String(row.id),
+      sourceId,
+      sourceType: String(row.source_type) as AgentHubAgent["sourceType"],
+      sourceTruthTool: String(row.source_truth_tool) as AgentHubToolId,
+      truthRole: String(row.truth_role) as AgentHubAgent["truthRole"],
+      sourceFormat: String(row.source_format) as AgentHubAgent["sourceFormat"],
+      slug: String(row.slug),
+      name: String(row.name),
+      description: row.description === null ? null : String(row.description),
+      nativePath: String(row.native_path),
+      libraryRelativePath: String(row.library_relative_path),
+      sourceRelativePath: row.source_relative_path === null ? null : String(row.source_relative_path),
+      category: row.category === null ? null : String(row.category),
+      projection: parseJson<AgentHubAgent["projection"]>(String(row.projection_json), {
+        name: String(row.name),
+        description: row.description === null ? null : String(row.description),
+        body: "",
+        slugCandidate: String(row.slug),
+        parseWarnings: []
+      }),
+      nativeMetadata: parseJson<Record<string, unknown>>(String(row.native_metadata_json), {}),
+      contentHash: String(row.content_hash),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      source: sources.get(sourceId) ?? null
+    };
+  }
+
   private pluginHubSourceFromRow(row: Row): PluginHubSource {
     return {
       id: String(row.id),
@@ -2012,6 +2403,24 @@ export class AppDatabase {
       appliedAt: String(row.applied_at),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
+    };
+  }
+
+  private projectAgentTargetFromRow(row: Row, agents: Map<string, AgentHubAgent>): ProjectAgentTarget {
+    const agentId = String(row.agent_id);
+    return {
+      id: String(row.id),
+      projectId: String(row.project_id),
+      targetRootPath: String(row.target_root_path),
+      toolId: String(row.tool_id) as AgentHubToolId,
+      agentId,
+      outputPath: String(row.output_path),
+      appliedSourceHash: String(row.applied_source_hash),
+      appliedOutputHash: String(row.applied_output_hash),
+      appliedAt: String(row.applied_at),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      agent: agents.get(agentId) ?? null
     };
   }
 

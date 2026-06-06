@@ -50,6 +50,7 @@
       "dist/client/**/*",
       "builtin-skills/**/*",
       "builtin-mcps/**/*",
+      "builtin-agents/**/*",
       "skills-lock.json",
       "package.json"
     ],

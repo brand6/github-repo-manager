@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # Add AgentHub conflict preview and polish
 
@@ -14,15 +14,15 @@ This slice should also align AgentHub UI details with the existing SkillHub comp
 
 ## Acceptance criteria
 
-- [ ] Enabling a target returns a preview with target tool, target path, action kind, source truth, truth role, and rendered summary.
-- [ ] Syncing an outdated target returns the same preview before writing.
-- [ ] Applying an AgentHub agent over an unmanaged file requires confirmation and offers overwrite, migrate-then-overwrite, or cancel.
-- [ ] Applying an AgentHub agent over another managed target at the same path requires replacement confirmation and removes or updates the previous binding consistently.
-- [ ] Project UI uses compact row actions, source grouping, search, and bottom-right toast behavior consistent with SkillHub.
-- [ ] Center and project rows show lightweight truth tool and truth role tags.
-- [ ] Unavailable or unsupported tools are hidden from project target checkboxes instead of showing explanatory disabled chips.
-- [ ] Opening center native file/folder and project output file/folder works from the relevant row actions.
-- [ ] Tests cover preview payloads, unmanaged overwrite confirmation, migrate-then-overwrite, managed replacement, hidden unsupported tools, row actions, toast refresh, and open file/folder actions.
+- [x] Enabling a target returns a preview with target tool, target path, action kind, source truth, truth role, and rendered summary.
+- [x] Syncing an outdated target returns the same preview before writing.
+- [x] Applying an AgentHub agent over an unmanaged file requires confirmation and offers overwrite, migrate-then-overwrite, or cancel.
+- [x] Applying an AgentHub agent over another managed target at the same path requires replacement confirmation and removes or updates the previous binding consistently.
+- [x] Project UI uses compact row actions, source grouping, search, and bottom-right toast behavior consistent with SkillHub.
+- [x] Center and project rows show lightweight truth tool and truth role tags.
+- [x] Unavailable or unsupported tools are hidden from project target checkboxes instead of showing explanatory disabled chips.
+- [x] Opening center native file/folder and project output file/folder works from the relevant row actions.
+- [x] Tests cover preview payloads, unmanaged overwrite confirmation, migrate-then-overwrite, managed replacement, hidden unsupported tools, row actions, toast refresh, and open file/folder actions.
 
 ## Blocked by
 

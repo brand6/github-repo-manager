@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # Discover and migrate local project Agents
 
@@ -14,15 +14,15 @@ Migrating a project-local unmanaged agent copies it into AgentHub library and im
 
 ## Acceptance criteria
 
-- [ ] The project local-agent scan covers `.claude/agents/*.md`, `.codex/agents/*.toml`, `.cursor/rules/*.mdc`, `.opencode/agents/*.md`, and `.qwen/agents/*.md` under the current `targetRootPath`.
-- [ ] Local project files with existing ProjectAgentTarget bindings are shown as managed.
-- [ ] Recognized local project files without AgentHub bindings are shown as unmanaged.
-- [ ] Invalid or unparseable files are shown with a non-destructive status and are not silently migrated.
-- [ ] Unmanaged migration supports the SkillHub-style target choices: migrate into an existing source or create a new local-import source.
-- [ ] Migrating copies the native truth file into AgentHub library and creates an AgentHub agent using that file's tool as source truth.
-- [ ] After migration, the original project file is registered as managed with current status instead of being duplicated or overwritten.
-- [ ] Same slug conflicts in the chosen source require confirmation and support overwrite, rename, or cancel.
-- [ ] Tests cover managed/unmanaged classification, per-tool scan paths, invalid file handling, migration into existing source, migration into new source, immediate binding registration, same-slug conflict handling, and UI tab behavior.
+- [x] The project local-agent scan covers `.claude/agents/*.md`, `.codex/agents/*.toml`, `.cursor/rules/*.mdc`, `.opencode/agents/*.md`, and `.qwen/agents/*.md` under the current `targetRootPath`.
+- [x] Local project files with existing ProjectAgentTarget bindings are shown as managed.
+- [x] Recognized local project files without AgentHub bindings are shown as unmanaged.
+- [x] Invalid or unparseable files are shown with a non-destructive status and are not silently migrated.
+- [x] Unmanaged migration supports the SkillHub-style target choices: migrate into an existing source or create a new local-import source.
+- [x] Migrating copies the native truth file into AgentHub library and creates an AgentHub agent using that file's tool as source truth.
+- [x] After migration, the original project file is registered as managed with current status instead of being duplicated or overwritten.
+- [x] Same slug conflicts in the chosen source require confirmation and support overwrite, rename, or cancel.
+- [x] Tests cover managed/unmanaged classification, per-tool scan paths, invalid file handling, migration into existing source, migration into new source, immediate binding registration, same-slug conflict handling, and UI tab behavior.
 
 ## Blocked by
 

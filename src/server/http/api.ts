@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import express, { type Express, type Request, type Response } from "express";
 import {
+  type AgentHubApplyConflictMode,
+  type AgentHubDisableMode,
+  type AgentHubImportConflictResolution,
+  type AgentHubToolId,
   type HookHubApplyMode,
   type HookHubImportConflictMode,
   type HookHubSuiteInput,
@@ -16,13 +20,15 @@ import {
   type ProjectLocalMcpMigrationMode,
   type ProjectLocalSkillMigrationMode,
   type ProjectLocalSkillMigrationTarget,
+  type ProjectLocalAgentMigrationTarget,
   type RefreshMode,
   type RefreshResult,
   type RuleCreateSource,
   type RuleFileName,
   type RuleSyncDirection,
   type SkillHubOpenTarget,
-  type ToolId
+  type ToolId,
+  isAgentHubToolId
 } from "../../shared/types.js";
 import { adapterFor, listToolStatuses, sessionSourcesForAdapter, toolAdapters } from "../tools/adapters.js";
 import { refreshAllSessions, refreshProjectSessions, refreshSessionFiles } from "../scanning/sessionScanner.js";
@@ -88,6 +94,20 @@ import {
   updateHookHubSuite,
   writeProjectHooks
 } from "../hookhub/hookhub.js";
+import {
+  applyProjectAgentTarget,
+  deleteAgentHubSource,
+  disableProjectAgentTarget,
+  importBuiltInAgencyAgents,
+  importLocalAgentFolder,
+  listAgentHub,
+  listProjectAgentState,
+  migrateProjectLocalAgent,
+  openAgentHubAgent,
+  reparseAgentHubAgent,
+  syncProjectAgents,
+  syncProjectAgentTarget
+} from "../agenthub/agenthub.js";
 import {
   createCustomPlugin,
   deletePluginHubPlugin,
@@ -280,6 +300,73 @@ export function installApi(app: Express, context: AppContext): void {
       response.json(deleteSkillHubSkill(context.database(), request.params.id));
     } catch (error) {
       response.status(404).json({ error: "skillhub-skill-delete-failed", reason: error instanceof Error ? error.message : "skillhub-skill-delete-failed" });
+    }
+  });
+
+  app.get("/api/agenthub", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    response.json(listAgentHub(context.database(), dataDir, String(request.query.query ?? "")));
+  });
+
+  app.post("/api/agenthub/import/builtin/agency-agents", (_request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    try {
+      response.json(importBuiltInAgencyAgents(context.database(), dataDir));
+    } catch (error) {
+      response.status(400).json({ error: "agenthub-builtin-import-failed", reason: error instanceof Error ? error.message : "agenthub-builtin-import-failed" });
+    }
+  });
+
+  app.post("/api/agenthub/import/local", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const inputPath = stringBody(request, "path");
+    const sourceTruthTool = agentHubToolIdBody(request, "sourceTruthTool");
+    if (!dataDir) return;
+    if (!inputPath || !sourceTruthTool) {
+      response.status(400).json({ error: "path and sourceTruthTool are required" });
+      return;
+    }
+    try {
+      response.json(
+        importLocalAgentFolder(context.database(), dataDir, inputPath, sourceTruthTool, {
+          conflictResolutions: agentHubConflictResolutionsBody(request)
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "agenthub-local-import-failed", reason: error instanceof Error ? error.message : "agenthub-local-import-failed" });
+    }
+  });
+
+  app.post("/api/agenthub/agents/:id/open", (request, response) => {
+    const target = skillHubOpenTargetBody(request);
+    if (!target) {
+      response.status(400).json({ error: "target must be document or folder" });
+      return;
+    }
+    try {
+      response.json(openAgentHubAgent(context.database(), request.params.id, target));
+    } catch (error) {
+      response.status(404).json({ error: "agenthub-agent-open-failed", reason: error instanceof Error ? error.message : "agenthub-agent-open-failed" });
+    }
+  });
+
+  app.post("/api/agenthub/agents/:id/reparse", (request, response) => {
+    try {
+      response.json(reparseAgentHubAgent(context.database(), request.params.id));
+    } catch (error) {
+      response.status(400).json({ error: "agenthub-agent-reparse-failed", reason: error instanceof Error ? error.message : "agenthub-agent-reparse-failed" });
+    }
+  });
+
+  app.delete("/api/agenthub/sources/:id", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    try {
+      response.json(deleteAgentHubSource(context.database(), dataDir, request.params.id));
+    } catch (error) {
+      response.status(404).json({ error: "agenthub-source-delete-failed", reason: error instanceof Error ? error.message : "agenthub-source-delete-failed" });
     }
   });
 
@@ -989,6 +1076,87 @@ export function installApi(app: Express, context: AppContext): void {
     }
   });
 
+  app.get("/api/projects/:id/agents", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!dataDir || !project) return;
+    response.json(listProjectAgentState(context.database(), dataDir, project, String(request.query.query ?? "")));
+  });
+
+  app.post("/api/projects/:id/agents/sync", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!dataDir || !project) return;
+    try {
+      response.json(syncProjectAgents(context.database(), dataDir, project));
+    } catch (error) {
+      response.status(400).json({ error: "project-agent-sync-all-failed", reason: error instanceof Error ? error.message : "project-agent-sync-all-failed" });
+    }
+  });
+
+  app.put("/api/projects/:id/agent-targets/:agentId/:toolId", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = agentHubToolIdParam(request, "toolId");
+    if (!dataDir || !project) return;
+    if (!toolId) {
+      response.status(400).json({ error: "toolId must be claude, codex, opencode, cursor, or qwen" });
+      return;
+    }
+    try {
+      response.json(
+        applyProjectAgentTarget(context.database(), dataDir, project, request.params.agentId, toolId, {
+          conflictMode: agentHubApplyConflictModeBody(request)
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "project-agent-apply-failed", reason: error instanceof Error ? error.message : "project-agent-apply-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/agent-bindings/:bindingId/sync", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!dataDir || !project) return;
+    try {
+      response.json(syncProjectAgentTarget(context.database(), dataDir, project, request.params.bindingId));
+    } catch (error) {
+      response.status(400).json({ error: "project-agent-sync-failed", reason: error instanceof Error ? error.message : "project-agent-sync-failed" });
+    }
+  });
+
+  app.delete("/api/projects/:id/agent-bindings/:bindingId", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    try {
+      response.json(disableProjectAgentTarget(context.database(), project, request.params.bindingId, { mode: agentHubDisableModeBody(request) }));
+    } catch (error) {
+      response.status(400).json({ error: "project-agent-disable-failed", reason: error instanceof Error ? error.message : "project-agent-disable-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/local-agents/migrate", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = agentHubToolIdBody(request, "toolId");
+    const outputPath = stringBody(request, "outputPath");
+    const target = localAgentMigrationTargetBody(request);
+    if (!dataDir || !project) return;
+    if (!toolId || !outputPath || target === undefined) {
+      response.status(400).json({ error: "toolId, outputPath, and valid target are required" });
+      return;
+    }
+    try {
+      response.json(
+        migrateProjectLocalAgent(context.database(), dataDir, project, toolId, outputPath, target, {
+          conflictResolution: agentHubConflictResolutionBody(request)
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "project-local-agent-migration-failed", reason: error instanceof Error ? error.message : "project-local-agent-migration-failed" });
+    }
+  });
+
   app.put("/api/projects/:id/skill-targets/:skillId", (request, response) => {
     const dataDir = requireDataDir(context, response);
     if (!dataDir) return;
@@ -1435,6 +1603,49 @@ function hookHubSupportedToolIdParam(request: Request): HookHubSupportedToolId |
   return isHookHubSupportedToolId(request.params.toolId) ? request.params.toolId : null;
 }
 
+function agentHubToolIdBody(request: Request, key: string): AgentHubToolId | null {
+  return isAgentHubToolId(request.body?.[key]) ? request.body[key] : null;
+}
+
+function agentHubToolIdParam(request: Request, key: string): AgentHubToolId | null {
+  return isAgentHubToolId(request.params[key]) ? request.params[key] : null;
+}
+
+function agentHubApplyConflictModeBody(request: Request): AgentHubApplyConflictMode | null {
+  const value = request.body?.conflictMode;
+  return value === "overwrite" || value === "migrate-then-overwrite" || value === "replace-managed" ? value : null;
+}
+
+function agentHubDisableModeBody(request: Request): AgentHubDisableMode | null {
+  const bodyValue = request.body?.mode;
+  const queryValue = request.query.mode;
+  const value = typeof bodyValue === "string" ? bodyValue : typeof queryValue === "string" ? queryValue : null;
+  return value === "keep-file" || value === "delete-with-backup" ? value : null;
+}
+
+function agentHubConflictResolutionBody(request: Request): AgentHubImportConflictResolution | null {
+  const value = request.body?.conflictResolution;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const slug = typeof record.slug === "string" ? record.slug.trim() : "";
+  const action = record.action;
+  if (!slug || (action !== "overwrite" && action !== "rename" && action !== "skip")) return null;
+  return {
+    slug,
+    action,
+    renameSlug: typeof record.renameSlug === "string" ? record.renameSlug.trim() : null
+  };
+}
+
+function agentHubConflictResolutionsBody(request: Request): AgentHubImportConflictResolution[] {
+  const values = Array.isArray(request.body?.conflictResolutions) ? request.body.conflictResolutions : [];
+  return values.flatMap((value: unknown) => {
+    const fakeRequest = { body: { conflictResolution: value } } as Request;
+    const parsed = agentHubConflictResolutionBody(fakeRequest);
+    return parsed ? [parsed] : [];
+  });
+}
+
 function hookHubApplyModeBody(request: Request): HookHubApplyMode | null {
   const value = request.body?.mode;
   return value === "overwrite" ||
@@ -1621,6 +1832,21 @@ function refreshModeBody(request: Request): RefreshMode | null {
 
 function ruleSyncDirectionBody(request: Request): RuleSyncDirection | null {
   return request.body?.direction === "agents-to-claude" || request.body?.direction === "claude-to-agents" ? request.body.direction : null;
+}
+
+function localAgentMigrationTargetBody(request: Request): ProjectLocalAgentMigrationTarget | undefined {
+  const target = request.body?.target;
+  if (!target || typeof target !== "object" || Array.isArray(target)) return undefined;
+  if (target.type === "existing-source") {
+    const sourceId = typeof target.sourceId === "string" ? target.sourceId.trim() : "";
+    return sourceId ? { type: "existing-source", sourceId } : undefined;
+  }
+  if (target.type === "new-source") {
+    const label = typeof target.label === "string" && target.label.trim() ? target.label.trim() : "project-local-agents";
+    const inputPath = typeof target.path === "string" && target.path.trim() ? target.path.trim() : null;
+    return { type: "new-source", label, path: inputPath };
+  }
+  return undefined;
 }
 
 function ruleFileNameBody(request: Request): RuleFileName | null {

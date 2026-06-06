@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { terminalModes } from "../shared/types.js";
 import type {
+  AgentHubApplyConflictMode,
+  AgentHubDisableMode,
+  AgentHubList,
+  AgentHubToolId,
   AppConfig,
   BootstrapState,
   CliHubList,
@@ -20,6 +24,10 @@ import type {
   Project,
   ProjectDetail,
   ProjectDetailGroup,
+  ProjectAgentApplyResult,
+  ProjectAgentState,
+  ProjectLocalAgent,
+  ProjectLocalAgentMigrationTarget,
   ProjectHookState,
   ProjectLocalMcpMigrationMode,
   ProjectLocalSkillMigrationMode,
@@ -51,6 +59,7 @@ import type {
   ToolStatus
 } from "../shared/types.js";
 import { client } from "./api.js";
+import { AgentHubPage, ProjectAgentsPanel } from "./agenthubViews.js";
 import { CliHubPage } from "./clihubViews.js";
 import { HookHubPage, ProjectHooksPanel } from "./hookhubViews.js";
 import { McpHubPage, ProjectMcpPanel } from "./mcphubViews.js";
@@ -93,10 +102,12 @@ function App() {
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
-  const [view, setView] = useState<"home" | "skillhub" | "mcphub" | "hookhub" | "clihub" | "pluginhub">("home");
+  const [view, setView] = useState<"home" | "skillhub" | "mcphub" | "hookhub" | "clihub" | "pluginhub" | "agenthub">("home");
   const [skillHub, setSkillHub] = useState<SkillHubList | null>(null);
   const [skillHubQuery, setSkillHubQuery] = useState("");
   const [skillHubUpdates, setSkillHubUpdates] = useState<SkillHubUpdateCheckResult | null>(null);
+  const [agentHub, setAgentHub] = useState<AgentHubList | null>(null);
+  const [agentHubQuery, setAgentHubQuery] = useState("");
   const [cliHub, setCliHub] = useState<CliHubList | null>(null);
   const [cliHubStatus, setCliHubStatus] = useState("");
   const [mcpHub, setMcpHub] = useState<McpHubList | null>(null);
@@ -121,6 +132,10 @@ function App() {
   const [projectPluginState, setProjectPluginState] = useState<ProjectPluginState | null>(null);
   const [projectPluginTargetRoot, setProjectPluginTargetRoot] = useState<string | null>(null);
   const [lastProjectPluginResult, setLastProjectPluginResult] = useState<ProjectPluginApplyResult | null>(null);
+  const [projectAgentPanelOpen, setProjectAgentPanelOpen] = useState(false);
+  const [projectAgentState, setProjectAgentState] = useState<ProjectAgentState | null>(null);
+  const [projectAgentTargetRoot, setProjectAgentTargetRoot] = useState<string | null>(null);
+  const [lastProjectAgentResult, setLastProjectAgentResult] = useState<ProjectAgentApplyResult | null>(null);
   const [ruleSyncStatus, setRuleSyncStatus] = useState<RuleSyncStatus | null>(null);
   const [pendingRuleSyncDirection, setPendingRuleSyncDirection] = useState<RuleSyncDirection | null>(null);
   const [pendingRuleCreateFile, setPendingRuleCreateFile] = useState<RuleFileName | null>(null);
@@ -215,6 +230,11 @@ function App() {
   }, [view, skillHubQuery, bootstrap?.initialized]);
 
   useEffect(() => {
+    if (view !== "agenthub" || !bootstrap?.initialized) return;
+    void loadAgentHub(agentHubQuery);
+  }, [view, agentHubQuery, bootstrap?.initialized]);
+
+  useEffect(() => {
     if (view !== "clihub" || !bootstrap?.initialized) return;
     void loadCliHub(true);
   }, [view, bootstrap?.initialized]);
@@ -257,6 +277,10 @@ function App() {
 
   async function loadSkillHub(search = skillHubQuery) {
     setSkillHub(await client.skillhub(search));
+  }
+
+  async function loadAgentHub(search = agentHubQuery) {
+    setAgentHub(await client.agenthub(search));
   }
 
   async function loadCliHub(refreshDiscovery = false) {
@@ -372,6 +396,10 @@ function App() {
     setProjectPluginState(null);
     setProjectPluginTargetRoot(null);
     setLastProjectPluginResult(null);
+    setProjectAgentPanelOpen(false);
+    setProjectAgentState(null);
+    setProjectAgentTargetRoot(null);
+    setLastProjectAgentResult(null);
     setRuleSyncStatus(null);
     setPendingRuleSyncDirection(null);
     resetRuleCreateDialog();
@@ -397,6 +425,13 @@ function App() {
     setMessage("");
     clearProjectViewState();
     setView("skillhub");
+  }
+
+  function openAgentHub() {
+    setSelectedProjectId(null);
+    setMessage("");
+    clearProjectViewState();
+    setView("agenthub");
   }
 
   function openCliHub() {
@@ -430,11 +465,12 @@ function App() {
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const totalSessions = projects.reduce((sum, project) => sum + project.sessionCount, 0);
   const showingSkillHub = view === "skillhub" && !selectedProject;
+  const showingAgentHub = view === "agenthub" && !selectedProject;
   const showingCliHub = view === "clihub" && !selectedProject;
   const showingMcpHub = view === "mcphub" && !selectedProject;
   const showingHookHub = view === "hookhub" && !selectedProject;
   const showingPluginHub = view === "pluginhub" && !selectedProject;
-  const showingHub = showingSkillHub || showingCliHub || showingMcpHub || showingHookHub || showingPluginHub;
+  const showingHub = showingSkillHub || showingAgentHub || showingCliHub || showingMcpHub || showingHookHub || showingPluginHub;
   const cliHubOperationStatus = showingCliHub && cliHub?.operation ? cliHubOperationMessage(cliHub.operation) : "";
   const transientStatus = scanStatus || cliHubStatus || cliHubOperationStatus;
   const homeCommandBar = selectedProject || showingHub ? null : (
@@ -504,6 +540,9 @@ function App() {
           <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
             SkillHub
           </button>
+          <button className={`topbar-link${view === "agenthub" ? " active" : ""}`} type="button" onClick={openAgentHub}>
+            AgentHub
+          </button>
           <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
             McpHub
           </button>
@@ -535,7 +574,19 @@ function App() {
                 返回
               </button>
               <div className="topbar-project-title">
-                <h1>{showingSkillHub ? "SkillHub" : showingCliHub ? "CliHub" : showingMcpHub ? "McpHub" : showingPluginHub ? "PluginHub" : "HookHub"}</h1>
+                <h1>
+                  {showingSkillHub
+                    ? "SkillHub"
+                    : showingAgentHub
+                      ? "AgentHub"
+                      : showingCliHub
+                        ? "CliHub"
+                        : showingMcpHub
+                          ? "McpHub"
+                          : showingPluginHub
+                            ? "PluginHub"
+                            : "HookHub"}
+                </h1>
               </div>
             </div>
           ) : (
@@ -680,6 +731,20 @@ function App() {
         />
       ) : null}
 
+      {projectAgentPanelOpen ? (
+        <ProjectAgentsPanel
+          state={projectAgentState}
+          busy={busy}
+          lastApply={lastProjectAgentResult}
+          onClose={() => setProjectAgentPanelOpen(false)}
+          onApplyAgent={(agentId, toolId, conflictMode) => void runAction(() => applyProjectAgent(agentId, toolId, conflictMode))}
+          onSyncBinding={(bindingId) => void runAction(() => syncProjectAgent(bindingId))}
+          onDisableBinding={(bindingId, mode) => void runAction(() => disableProjectAgent(bindingId, mode))}
+          onSyncAll={() => void runAction(syncProjectAgents)}
+          onMigrateLocalAgent={(localAgent, target) => void runAction(() => migrateProjectLocalAgent(localAgent, target))}
+        />
+      ) : null}
+
       <GlobalNotice message={message} busyMessage={transientStatus} />
 
       {showingSkillHub ? (
@@ -695,6 +760,19 @@ function App() {
           onOpenSkill={(skillId, target) => void runAction(() => openSkillHubSkill(skillId, target))}
           onDeleteSkill={(skillId) => void runAction(() => deleteSkill(skillId))}
           onApplyUpdate={(preview) => void runAction(() => applySkillHubUpdate(preview))}
+        />
+      ) : showingAgentHub ? (
+        <AgentHubPage
+          agentHub={agentHub}
+          query={agentHubQuery}
+          busy={busy}
+          onQueryChange={setAgentHubQuery}
+          onPickLocalPath={pickDirectory}
+          onImportLocal={(inputPath, truthTool) => void runAction(() => importLocalAgents(inputPath, truthTool))}
+          onReimportBuiltin={() => void runAction(reimportBuiltInAgents)}
+          onOpenAgent={(agentId, target) => void runAction(() => openAgentHubAgent(agentId, target))}
+          onReparseAgent={(agentId) => void runAction(() => reparseAgentHubAgent(agentId))}
+          onDeleteSource={(sourceId) => void runAction(() => deleteAgentHubSource(sourceId))}
         />
       ) : showingCliHub ? (
         <CliHubPage
@@ -766,6 +844,7 @@ function App() {
           onCreateRuleFile={(file) => void runAction(() => openRuleCreateDialog(file))}
           onOpenRuleFile={(file) => void runAction(() => openRuleFile(file))}
           onOpenProjectSkills={(targetRootPath) => void runAction(() => openProjectSkillPanel(selectedProject.id, targetRootPath))}
+          onOpenProjectAgents={(targetRootPath) => void runAction(() => openProjectAgentPanel(selectedProject.id, targetRootPath))}
           onOpenProjectPlugins={(targetRootPath) => void runAction(() => openProjectPluginPanel(selectedProject.id, targetRootPath))}
           onOpenProjectMcp={(targetRootPath) => void runAction(() => openProjectMcpPanel(selectedProject.id, targetRootPath))}
           onOpenProjectHooks={(targetRootPath) => void runAction(() => openProjectHooksPanel(selectedProject.id, targetRootPath))}
@@ -833,6 +912,7 @@ function App() {
     setMessage(`项目刷新完成：${result.indexedCount} 条，会话跳过 ${result.skippedCount} 条，警告 ${result.warningCount} 条`);
     await loadHome();
     await loadDetail(projectId, query);
+    if (projectAgentPanelOpen) await refreshProjectAgentPanel();
   }
 
   async function addProject(rootPath: string) {
@@ -979,6 +1059,58 @@ function App() {
     setSkillHubUpdates(null);
     await loadSkillHub();
     setMessage(`本地导入完成：新增 ${result.imported.length} 个，跳过 ${result.skipped.length} 个`);
+  }
+
+  async function importLocalAgents(inputPath: string, truthTool: AgentHubToolId) {
+    const result = await client.importLocalAgents(inputPath, truthTool);
+    if (result.requiresConfirmation) {
+      const confirmed = window.confirm(`检测到 ${result.conflicts.length} 个同 slug Agent 变更，是否覆盖 AgentHub library 中的已有内容？`);
+      if (!confirmed) {
+        setMessage("已取消本地 Agent 覆盖");
+        return;
+      }
+      await client.importLocalAgents(
+        inputPath,
+        truthTool,
+        result.conflicts.map((conflict) => ({ slug: conflict.slug, action: "overwrite" }))
+      );
+    }
+    await loadAgentHub();
+    setMessage(`AgentHub 导入完成：新增 ${result.imported.length} 个，更新 ${result.updated.length} 个，跳过 ${result.skipped.length} 个`);
+  }
+
+  async function reimportBuiltInAgents() {
+    const result = await client.importBuiltInAgencyAgents();
+    await loadAgentHub();
+    setMessage(`agency-agents 导入完成：新增 ${result.imported.length} 个，更新 ${result.updated.length} 个`);
+  }
+
+  async function openAgentHubAgent(agentId: string, target: SkillHubOpenTarget) {
+    await client.openAgentHubAgent(agentId, target);
+    setMessage(target === "document" ? "已打开 Agent 文件" : "已打开 Agent 目录");
+  }
+
+  async function reparseAgentHubAgent(agentId: string) {
+    await client.reparseAgentHubAgent(agentId);
+    await loadAgentHub();
+    if (projectAgentPanelOpen && selectedProjectId) {
+      setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+    }
+    setMessage("AgentHub Agent 已重新解析");
+  }
+
+  async function deleteAgentHubSource(sourceId: string) {
+    const confirmed = window.confirm("确定删除这个 AgentHub source？相关中心 Agent 和项目 binding 会一起移除。");
+    if (!confirmed) {
+      setMessage("已取消删除 AgentHub source");
+      return;
+    }
+    await client.deleteAgentHubSource(sourceId);
+    await loadAgentHub();
+    if (projectAgentPanelOpen && selectedProjectId) {
+      setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+    }
+    setMessage("AgentHub source 已删除");
   }
 
   async function importGitHubSkill(input: string) {
@@ -1274,6 +1406,19 @@ function App() {
     setProjectLocalSkillState(localSkills);
   }
 
+  async function openProjectAgentPanel(projectId: string, targetRootPath: string) {
+    setProjectAgentPanelOpen(true);
+    setProjectAgentTargetRoot(targetRootPath);
+    setLastProjectAgentResult(null);
+    setProjectAgentState(null);
+    setProjectAgentState(await client.projectAgents(projectId, targetRootPath));
+  }
+
+  async function refreshProjectAgentPanel() {
+    if (!selectedProjectId) return;
+    setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+  }
+
   async function openProjectMcpPanel(projectId: string, targetRootPath: string) {
     setProjectMcpPanelOpen(true);
     setProjectMcpTargetRoot(targetRootPath);
@@ -1548,6 +1693,82 @@ function App() {
     return "本地技能已迁移到 SkillHub";
   }
 
+  async function applyProjectAgent(agentId: string, toolId: AgentHubToolId, conflictMode: AgentHubApplyConflictMode | null = null) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectAgentTargetRoot ?? undefined;
+    let result = await client.applyProjectAgent(selectedProjectId, agentId, toolId, targetRootPath, conflictMode);
+    if (result.requiresConfirmation) {
+      let nextMode: AgentHubApplyConflictMode | null = null;
+      if (result.conflicts.length) {
+        const migrate = window.confirm("目标路径已有 unmanaged Agent。确定先迁移当前文件再覆盖？取消则仅覆盖前备份。");
+        nextMode = migrate ? "migrate-then-overwrite" : "overwrite";
+      } else if (result.replacedBindings.length) {
+        const confirmed = window.confirm("目标路径已由另一个 AgentHub agent 管理，是否替换 binding？");
+        nextMode = confirmed ? "replace-managed" : null;
+      } else {
+        const confirmed = window.confirm("目标文件已 drifted，是否备份后覆盖？");
+        nextMode = confirmed ? "overwrite" : null;
+      }
+      if (!nextMode) {
+        setLastProjectAgentResult(result);
+        setMessage("已取消 AgentHub 写入");
+        return;
+      }
+      result = await client.applyProjectAgent(selectedProjectId, agentId, toolId, targetRootPath, nextMode);
+    }
+    setLastProjectAgentResult(result);
+    await Promise.all([refreshProjectAgentPanel(), loadAgentHub()]);
+    setMessage(result.backups.length ? "项目 Agent 已写入，原文件已备份" : "项目 Agent 已写入");
+  }
+
+  async function syncProjectAgent(bindingId: string) {
+    if (!selectedProjectId) return;
+    const result = await client.syncProjectAgent(selectedProjectId, bindingId, projectAgentTargetRoot ?? undefined);
+    setLastProjectAgentResult(result);
+    await refreshProjectAgentPanel();
+    setMessage("AgentHub target 已同步");
+  }
+
+  async function syncProjectAgents() {
+    if (!selectedProjectId) return;
+    const result = await client.syncProjectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined);
+    await refreshProjectAgentPanel();
+    setMessage(`AgentHub 同步完成：更新 ${result.updated.length} 个，跳过 ${result.skipped.length} 个`);
+  }
+
+  async function disableProjectAgent(bindingId: string, mode: AgentHubDisableMode | null = null) {
+    if (!selectedProjectId) return;
+    let result = await client.disableProjectAgent(selectedProjectId, bindingId, projectAgentTargetRoot ?? undefined, mode);
+    if (result.requiresConfirmation) {
+      const keep = window.confirm("项目 Agent 已 drifted。确定保留文件并仅移除 binding？取消则备份后删除文件。");
+      result = await client.disableProjectAgent(selectedProjectId, bindingId, projectAgentTargetRoot ?? undefined, keep ? "keep-file" : "delete-with-backup");
+    }
+    await refreshProjectAgentPanel();
+    setMessage(result.deletedFile ? "AgentHub target 已禁用并删除项目文件" : "AgentHub binding 已移除，项目文件保留");
+  }
+
+  async function migrateProjectLocalAgent(localAgent: ProjectLocalAgent, target: ProjectLocalAgentMigrationTarget) {
+    if (!selectedProjectId) return;
+    let result = await client.migrateProjectLocalAgent(selectedProjectId, localAgent.toolId, localAgent.outputPath, target, projectAgentTargetRoot ?? undefined);
+    if (result.requiresConfirmation) {
+      const confirmed = window.confirm("AgentHub source 中已有同 slug Agent，是否覆盖中心真源？");
+      if (!confirmed || !result.conflicts[0]) {
+        setMessage("已取消本地 Agent 迁移");
+        return;
+      }
+      result = await client.migrateProjectLocalAgent(
+        selectedProjectId,
+        localAgent.toolId,
+        localAgent.outputPath,
+        target,
+        projectAgentTargetRoot ?? undefined,
+        { slug: result.conflicts[0].slug, action: "overwrite" }
+      );
+    }
+    await Promise.all([refreshProjectAgentPanel(), loadAgentHub()]);
+    setMessage(result.action === "overwritten" ? "本地 Agent 已覆盖 AgentHub 并接管" : "本地 Agent 已迁移到 AgentHub");
+  }
+
   async function saveProjectToolTargets(toolIds: ToolId[]) {
     if (!selectedProjectId) return;
     await client.updateProjectToolTargets(selectedProjectId, toolIds);
@@ -1564,6 +1785,9 @@ function App() {
     }
     if (projectPluginPanelOpen) {
       setProjectPluginState(await client.projectPlugins(selectedProjectId, projectPluginTargetRoot ?? undefined));
+    }
+    if (projectAgentPanelOpen) {
+      setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
     }
     setMessage("项目使用工具已更新");
   }
@@ -2489,6 +2713,7 @@ function ProjectDetailView({
   onCreateRuleFile = () => {},
   onOpenRuleFile = () => {},
   onOpenProjectSkills = () => {},
+  onOpenProjectAgents = () => {},
   onOpenProjectPlugins = () => {},
   onOpenProjectMcp = () => {},
   onOpenProjectHooks = () => {}
@@ -2515,6 +2740,7 @@ function ProjectDetailView({
   onCreateRuleFile?: (file: RuleFileName) => void;
   onOpenRuleFile?: (file: RuleFileName) => void;
   onOpenProjectSkills?: (targetRootPath: string) => void;
+  onOpenProjectAgents?: (targetRootPath: string) => void;
   onOpenProjectPlugins?: (targetRootPath: string) => void;
   onOpenProjectMcp?: (targetRootPath: string) => void;
   onOpenProjectHooks?: (targetRootPath: string) => void;
@@ -2595,6 +2821,7 @@ function ProjectDetailView({
           onResume={onResume}
           onDeleteSession={onDeleteSession}
           onOpenProjectSkills={onOpenProjectSkills}
+          onOpenProjectAgents={onOpenProjectAgents}
           onOpenProjectPlugins={onOpenProjectPlugins}
           onOpenProjectMcp={onOpenProjectMcp}
           onOpenProjectHooks={onOpenProjectHooks}
@@ -2956,6 +3183,7 @@ function SessionGroup({
   onResume,
   onDeleteSession,
   onOpenProjectSkills,
+  onOpenProjectAgents,
   onOpenProjectPlugins,
   onOpenProjectMcp,
   onOpenProjectHooks
@@ -2968,6 +3196,7 @@ function SessionGroup({
   onResume: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onOpenProjectSkills: (targetRootPath: string) => void;
+  onOpenProjectAgents: (targetRootPath: string) => void;
   onOpenProjectPlugins: (targetRootPath: string) => void;
   onOpenProjectMcp: (targetRootPath: string) => void;
   onOpenProjectHooks: (targetRootPath: string) => void;
@@ -2986,6 +3215,9 @@ function SessionGroup({
           <span className="metric-pill strong">{group.sessionCount} 个会话</span>
           <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectSkills(group.fullPath)}>
             技能
+          </button>
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectAgents(group.fullPath)}>
+            Agent
           </button>
           <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectPlugins(group.fullPath)}>
             Plugin

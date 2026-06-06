@@ -2,13 +2,18 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppConfig,
+  AgentHubAgent,
+  AgentHubList,
   CliHubList,
   HookHubSuite,
   PluginHubList,
   Project,
+  ProjectAgentApplyResult,
+  ProjectAgentState,
   ProjectDetail,
   ProjectHookBinding,
   ProjectHookState,
+  ProjectLocalAgentMigrationResult,
   ProjectLocalSkillsState,
   ProjectPluginState,
   ProjectRepairCandidate,
@@ -42,6 +47,12 @@ const clientMock = vi.hoisted(() => ({
   previewDeleteSkillHubSkill: vi.fn(),
   deleteSkillHubSkill: vi.fn(),
   openSkillHubSkill: vi.fn(),
+  agenthub: vi.fn(),
+  importBuiltInAgencyAgents: vi.fn(),
+  importLocalAgents: vi.fn(),
+  openAgentHubAgent: vi.fn(),
+  reparseAgentHubAgent: vi.fn(),
+  deleteAgentHubSource: vi.fn(),
   clihub: vi.fn(),
   refreshCliHubDiscovery: vi.fn(),
   addCliHubLocalPath: vi.fn(),
@@ -77,6 +88,12 @@ const clientMock = vi.hoisted(() => ({
   updateProjectSkillTargets: vi.fn(),
   projectLocalSkills: vi.fn(),
   migrateProjectLocalSkill: vi.fn(),
+  projectAgents: vi.fn(),
+  applyProjectAgent: vi.fn(),
+  syncProjectAgent: vi.fn(),
+  syncProjectAgents: vi.fn(),
+  disableProjectAgent: vi.fn(),
+  migrateProjectLocalAgent: vi.fn(),
   projectPlugins: vi.fn(),
   installProjectPlugin: vi.fn(),
   syncProjectPlugin: vi.fn(),
@@ -141,6 +158,12 @@ describe("HomePage", () => {
     });
     clientMock.checkSkillHubUpdates.mockResolvedValue({ previews: [] });
     clientMock.openSkillHubSkill.mockResolvedValue({ opened: true, path: "C:\\tmp\\github-repo-manager\\skillhub\\library\\review\\SKILL.md" });
+    clientMock.agenthub.mockResolvedValue(agentHubListFixture());
+    clientMock.importBuiltInAgencyAgents.mockResolvedValue({ source: agentHubSourceFixture(), imported: [], updated: [], skipped: [], conflicts: [], requiresConfirmation: false });
+    clientMock.importLocalAgents.mockResolvedValue({ source: agentHubSourceFixture(), imported: [], updated: [], skipped: [], conflicts: [], requiresConfirmation: false });
+    clientMock.openAgentHubAgent.mockResolvedValue({ opened: true, path: "C:\\tmp\\github-repo-manager\\agenthub\\library\\agency-agents\\engineering\\code-reviewer.md" });
+    clientMock.reparseAgentHubAgent.mockResolvedValue(agentHubAgentFixture());
+    clientMock.deleteAgentHubSource.mockResolvedValue({ sourceId: "agency-agents", agentsDeleted: [] });
     clientMock.clihub.mockResolvedValue(cliHubListFixture());
     clientMock.refreshCliHubDiscovery.mockResolvedValue(cliHubListFixture());
     clientMock.addCliHubLocalPath.mockResolvedValue(cliHubListFixture().clis[0]);
@@ -231,6 +254,12 @@ describe("HomePage", () => {
     clientMock.projectToolTargets.mockResolvedValue([]);
     clientMock.projectSkillTargets.mockResolvedValue({ projectId: "project-1", toolTargets: [], skillTargets: [], skills: [] });
     clientMock.projectLocalSkills.mockResolvedValue({ projectId: "project-1", toolTargets: [], migrationSources: [], skills: [] });
+    clientMock.projectAgents.mockResolvedValue(projectAgentStateFixture(projectFixture("E:\\old")));
+    clientMock.applyProjectAgent.mockResolvedValue(projectAgentApplyResultFixture(projectFixture("E:\\old")));
+    clientMock.syncProjectAgent.mockResolvedValue(projectAgentApplyResultFixture(projectFixture("E:\\old")));
+    clientMock.syncProjectAgents.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", updated: [], skipped: [] });
+    clientMock.disableProjectAgent.mockResolvedValue({ ...projectAgentDisableResultFixture(projectFixture("E:\\old")), deletedFile: false });
+    clientMock.migrateProjectLocalAgent.mockResolvedValue(projectLocalAgentMigrationResultFixture(projectFixture("E:\\old")));
     clientMock.projectPlugins.mockResolvedValue(projectPluginStateFixture(projectFixture("E:\\old")));
     clientMock.installProjectPlugin.mockResolvedValue(projectPluginApplyResultFixture(projectFixture("E:\\old")));
     clientMock.syncProjectPlugin.mockResolvedValue(projectPluginApplyResultFixture(projectFixture("E:\\old")));
@@ -453,7 +482,7 @@ describe("HomePage", () => {
     const topbar = container.querySelector(".topbar") as HTMLElement;
     const topbarLinks = [...topbar.querySelectorAll(".topbar-link")].map((button) => button.textContent?.trim());
     const stats = within(topbar).getByLabelText("项目统计");
-    expect(topbarLinks).toEqual(["CliHub", "PluginHub", "SkillHub", "McpHub", "HookHub"]);
+    expect(topbarLinks).toEqual(["CliHub", "PluginHub", "SkillHub", "AgentHub", "McpHub", "HookHub"]);
     expect(within(topbar).queryByText("项目总览")).not.toBeInTheDocument();
     expect(within(stats).getByText("项目")).toBeInTheDocument();
     expect(within(stats).getByText("2")).toBeInTheDocument();
@@ -513,6 +542,35 @@ describe("HomePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     expect(await screen.findByText("还没有项目")).toBeInTheDocument();
+  });
+
+  it("opens AgentHub from the topbar with source grouping and search", async () => {
+    clientMock.agenthub.mockResolvedValueOnce(agentHubListFixture()).mockResolvedValueOnce({
+      ...agentHubListFixture(),
+      agents: [agentHubAgentFixture({ id: "agent-2", slug: "ui-critic", name: "UI Critic", category: "design" })]
+    });
+
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "AgentHub" }));
+
+    expect(await screen.findByRole("heading", { name: "AgentHub" })).toBeInTheDocument();
+    expect(clientMock.agenthub).toHaveBeenCalledWith("");
+    expect(screen.getByRole("region", { name: "Agent 导入" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "AgentHub 来源" })).toBeInTheDocument();
+    expect(screen.getByText("agency-agents")).toBeInTheDocument();
+    expect(screen.getByText("1 个 Agent")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("agency-agents").closest("summary") as HTMLElement);
+    expect(screen.getByText("Code Reviewer")).toBeInTheDocument();
+    expect(screen.getByText("code-reviewer")).toBeInTheDocument();
+    expect(screen.getAllByText("claude").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("subagent").length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByPlaceholderText("名称、描述、slug、source、truth tool、路径或分类"), { target: { value: "design" } });
+    await waitFor(() => expect(clientMock.agenthub).toHaveBeenLastCalledWith("design"));
+    expect(await screen.findByText("UI Critic")).toBeInTheDocument();
   });
 
   it("opens PluginHub from the topbar and imports local plugins", async () => {
@@ -1694,6 +1752,52 @@ describe("HomePage", () => {
     expect(within(panel).getByText("OpenCode")).toBeInTheDocument();
   });
 
+  it("opens project Agent panel for a child group and handles apply conflicts and local migration", async () => {
+    const project = projectFixture("E:\\repo");
+    const childRoot = "E:\\repo\\packages\\app";
+    const state = projectAgentStateFixture(project, childRoot);
+    const localAgent = state.localAgents[0];
+    const conflictResult = projectAgentApplyResultFixture(project, childRoot, { requiresConfirmation: true, conflicts: [localAgent] });
+    const appliedResult = projectAgentApplyResultFixture(project, childRoot);
+    const migratedResult = projectLocalAgentMigrationResultFixture(project, childRoot);
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailWithChildGroup(project, childRoot));
+    clientMock.projectAgents.mockResolvedValue(state);
+    clientMock.applyProjectAgent.mockResolvedValueOnce(conflictResult).mockResolvedValueOnce(appliedResult);
+    clientMock.migrateProjectLocalAgent.mockResolvedValue(migratedResult);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+
+    await screen.findByText("repo");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    const childHeading = await screen.findByRole("heading", { name: "packages\\app" });
+    const childGroup = childHeading.closest(".session-group") as HTMLElement;
+    fireEvent.click(within(childGroup).getByRole("button", { name: "Agent" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目 Agent 管理" });
+    await waitFor(() => expect(clientMock.projectAgents).toHaveBeenLastCalledWith(project.id, childRoot));
+    expect(within(panel).getByText(childRoot)).toBeInTheDocument();
+    fireEvent.click(within(panel).getByText("agency-agents").closest("summary") as HTMLElement);
+    fireEvent.click(within(panel).getByText("Code Reviewer").closest("summary") as HTMLElement);
+    expect(within(panel).getByRole("checkbox", { name: /codex/ })).toBeInTheDocument();
+    expect(within(panel).queryByRole("checkbox", { name: /qwen/ })).not.toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole("checkbox", { name: /codex/ }));
+
+    await waitFor(() => expect(clientMock.applyProjectAgent).toHaveBeenNthCalledWith(1, project.id, "agent-1", "codex", childRoot, null));
+    await waitFor(() => expect(clientMock.applyProjectAgent).toHaveBeenNthCalledWith(2, project.id, "agent-1", "codex", childRoot, "migrate-then-overwrite"));
+    expect(confirm).toHaveBeenCalledWith("目标路径已有 unmanaged Agent。确定先迁移当前文件再覆盖？取消则仅覆盖前备份。");
+
+    fireEvent.click(within(panel).getByRole("tab", { name: "本地 Agent" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "迁移到 AgentHub" }));
+
+    await waitFor(() =>
+      expect(clientMock.migrateProjectLocalAgent).toHaveBeenCalledWith(project.id, "codex", localAgent.outputPath, { type: "existing-source", sourceId: "project-local-agents" }, childRoot)
+    );
+    expect(await screen.findByText("本地 Agent 已迁移到 AgentHub")).toBeInTheDocument();
+  });
+
   it("applies a McpHub server from the project MCP panel", async () => {
     const project = projectFixture("E:\\old");
     const server = {
@@ -2734,6 +2838,218 @@ function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boo
   };
 }
 
+function agentHubSourceFixture(): AgentHubList["sources"][number] {
+  return {
+    id: "agency-agents",
+    type: "builtin",
+    label: "agency-agents",
+    inputPath: null,
+    resolvedPath: "C:\\tmp\\github-repo-manager\\builtin-agents\\agency-agents",
+    sourceTruthTool: "claude",
+    importedAt: "2026-06-01T00:00:00Z",
+    metadata: {},
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z"
+  };
+}
+
+function agentHubAgentFixture(overrides: Partial<AgentHubAgent> = {}): AgentHubAgent {
+  const source = overrides.source ?? agentHubSourceFixture();
+  const slug = overrides.slug ?? "code-reviewer";
+  const name = overrides.name ?? "Code Reviewer";
+  return {
+    id: overrides.id ?? "agent-1",
+    sourceId: overrides.sourceId ?? source.id,
+    sourceType: overrides.sourceType ?? source.type,
+    sourceTruthTool: overrides.sourceTruthTool ?? "claude",
+    truthRole: overrides.truthRole ?? "subagent",
+    sourceFormat: overrides.sourceFormat ?? "markdown",
+    slug,
+    name,
+    description: overrides.description ?? "Review code changes",
+    nativePath: overrides.nativePath ?? `C:\\tmp\\github-repo-manager\\agenthub\\library\\agency-agents\\engineering\\${slug}.md`,
+    libraryRelativePath: overrides.libraryRelativePath ?? `agency-agents\\engineering\\${slug}.md`,
+    sourceRelativePath: overrides.sourceRelativePath ?? `engineering\\${slug}.md`,
+    category: overrides.category ?? "engineering",
+    projection: overrides.projection ?? {
+      name,
+      description: "Review code changes",
+      body: "Review the current patch.",
+      slugCandidate: slug,
+      parseWarnings: []
+    },
+    nativeMetadata: overrides.nativeMetadata ?? { tools: ["Read"] },
+    contentHash: overrides.contentHash ?? `${slug}-hash`,
+    createdAt: overrides.createdAt ?? "2026-06-01T00:00:00Z",
+    updatedAt: overrides.updatedAt ?? "2026-06-01T00:00:00Z",
+    source
+  };
+}
+
+function agentHubListFixture(): AgentHubList {
+  const source = agentHubSourceFixture();
+  return {
+    config: {
+      rootDir: "C:\\tmp\\github-repo-manager\\agenthub",
+      libraryDir: "C:\\tmp\\github-repo-manager\\agenthub\\library"
+    },
+    sources: [source],
+    agents: [agentHubAgentFixture({ source })]
+  };
+}
+
+function projectAgentStateFixture(project: Project, targetRootPath = project.rootPath): ProjectAgentState {
+  const scopedProject = { ...project, rootPath: targetRootPath, normalizedRootPath: targetRootPath.toLowerCase() };
+  const agent = agentHubAgentFixture();
+  const preview = agentHubPreviewFixture(agent, "codex", targetRootPath, "create");
+  const localAgent = projectLocalAgentFixture(project, targetRootPath);
+  return {
+    projectId: project.id,
+    targetRootPath,
+    toolTargets: [projectToolTargetFixture(scopedProject, "codex", true)],
+    sources: [agentHubSourceFixture()],
+    agents: [agent],
+    targets: [
+      {
+        projectId: project.id,
+        targetRootPath,
+        toolId: "codex",
+        agent,
+        binding: null,
+        outputPath: preview.targetPath,
+        status: "missing",
+        preview,
+        reason: "未启用",
+        error: null
+      }
+    ],
+    localAgents: [localAgent]
+  };
+}
+
+function projectLocalAgentFixture(project: Project, targetRootPath = project.rootPath): ProjectAgentState["localAgents"][number] {
+  return {
+    id: `codex:${targetRootPath.toLowerCase()}\\.codex\\agents\\local-reviewer.toml`,
+    projectId: project.id,
+    targetRootPath,
+    toolId: "codex",
+    type: "unmanaged",
+    outputPath: `${targetRootPath}\\.codex\\agents\\local-reviewer.toml`,
+    slug: "local-reviewer",
+    name: "Local Reviewer",
+    description: "Local review agent",
+    status: "unmanaged",
+    binding: null,
+    agent: null,
+    migratable: true,
+    reason: null
+  };
+}
+
+function projectAgentBindingFixture(project: Project, targetRootPath = project.rootPath) {
+  const agent = agentHubAgentFixture();
+  return {
+    id: "binding-1",
+    projectId: project.id,
+    targetRootPath,
+    toolId: "codex" as const,
+    agentId: agent.id,
+    outputPath: `${targetRootPath}\\.codex\\agents\\${agent.slug}.toml`,
+    appliedSourceHash: agent.contentHash,
+    appliedOutputHash: "output-hash",
+    appliedAt: "2026-06-01T00:00:00Z",
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z",
+    agent
+  };
+}
+
+function agentHubPreviewFixture(agent: AgentHubAgent, targetToolId: "codex", targetRootPath: string, action: "create" | "overwrite" | "sync" | "replace-managed") {
+  return {
+    agentId: agent.id,
+    targetToolId,
+    targetPath: `${targetRootPath}\\.codex\\agents\\${agent.slug}.toml`,
+    action,
+    sourceTruthTool: agent.sourceTruthTool,
+    truthRole: agent.truthRole,
+    renderedSummary: `${agent.name} -> ${targetToolId}`,
+    preservedNativeFields: [],
+    ignoredNativeFields: [],
+    outputHash: "output-hash"
+  };
+}
+
+function projectAgentApplyResultFixture(
+  project: Project,
+  targetRootPath = project.rootPath,
+  overrides: Partial<Pick<ProjectAgentApplyResult, "requiresConfirmation" | "conflicts" | "replacedBindings" | "backups" | "action">> = {}
+): ProjectAgentApplyResult {
+  const agent = agentHubAgentFixture();
+  const binding = projectAgentBindingFixture(project, targetRootPath);
+  const preview = agentHubPreviewFixture(agent, "codex", targetRootPath, overrides.requiresConfirmation ? "overwrite" : "create");
+  return {
+    projectId: project.id,
+    targetRootPath,
+    toolId: "codex",
+    agent,
+    binding: overrides.requiresConfirmation ? null : binding,
+    state: overrides.requiresConfirmation
+      ? null
+      : {
+          projectId: project.id,
+          targetRootPath,
+          toolId: "codex",
+          agent,
+          binding,
+          outputPath: binding.outputPath,
+          status: "current",
+          preview,
+          reason: null,
+          error: null
+        },
+    preview,
+    conflicts: overrides.conflicts ?? [],
+    replacedBindings: overrides.replacedBindings ?? [],
+    backups: overrides.backups ?? [],
+    requiresConfirmation: overrides.requiresConfirmation ?? false,
+    action: overrides.action ?? (overrides.requiresConfirmation ? "needs-confirmation" : "applied")
+  };
+}
+
+function projectAgentDisableResultFixture(project: Project, targetRootPath = project.rootPath) {
+  return {
+    projectId: project.id,
+    targetRootPath,
+    binding: projectAgentBindingFixture(project, targetRootPath),
+    removed: true,
+    deletedFile: true,
+    backups: [],
+    requiresConfirmation: false,
+    status: "current" as const
+  };
+}
+
+function projectLocalAgentMigrationResultFixture(project: Project, targetRootPath = project.rootPath): ProjectLocalAgentMigrationResult {
+  const source = agentHubSourceFixture();
+  const agent = agentHubAgentFixture({ source, slug: "local-reviewer", name: "Local Reviewer" });
+  return {
+    projectId: project.id,
+    targetRootPath,
+    localAgent: projectLocalAgentFixture(project, targetRootPath),
+    source,
+    agent,
+    binding: {
+      ...projectAgentBindingFixture(project, targetRootPath),
+      agentId: agent.id,
+      outputPath: `${targetRootPath}\\.codex\\agents\\local-reviewer.toml`,
+      agent
+    },
+    conflicts: [],
+    requiresConfirmation: false,
+    action: "migrated"
+  };
+}
+
 function hookHubSuiteFixture(): HookHubSuite {
   return {
     suiteId: "suite-1",
@@ -3019,14 +3335,12 @@ function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", sk
       opencode: { command: "opencode" },
       kilo: { command: "kilo" },
       qwen: { command: "qwen" },
-      deepcode: { command: "deepcode" },
       kimi: { command: "kimi" },
       qoder: { command: "qodercli" },
       codebuddy: { command: "codebuddy" },
       copilot: { command: "copilot" },
       cursor: { command: "cursor-agent" },
-      antigravity: { command: "agy" },
-      reasonix: { command: "reasonix" }
+      antigravity: { command: "agy" }
     },
     terminal: { mode },
     skillhub: { rootDir: skillHubRoot }

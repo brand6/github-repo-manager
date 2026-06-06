@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # Build project Agent panel and target writes
 
@@ -14,16 +14,16 @@ This slice should mirror SkillHub's project-side shape but write real native fil
 
 ## Acceptance criteria
 
-- [ ] Each root/subproject group exposes an `Agent` entry next to existing project-local management entries.
-- [ ] The Agent panel has `AgentHub Agent` and `本地 Agent` tabs.
-- [ ] The `AgentHub Agent` tab lists center agents with source context, truth tool, truth role, name, description, slug, and compact row actions.
-- [ ] Tool checkboxes only appear for tools that are enabled/available for the current project group and convertible by AgentHub.
-- [ ] Enabling a target writes the fixed native file path for that tool and slug under the current `targetRootPath`.
-- [ ] Enabling stores a ProjectAgentTarget binding with project id, target root path, tool id, agent id, output path, applied source hash, applied output hash, and applied time.
-- [ ] New writes create parent directories as needed.
-- [ ] Existing same-path unmanaged files are not overwritten in this slice; they return a conflict result for the follow-up conflict flow.
-- [ ] The UI shows successful writes through the shared toast pattern and refreshes the panel state.
-- [ ] Tests cover root and subproject target paths, visible target tools, native output content for all MVP tools, binding persistence, current status after write, conflict-on-existing-file, and UI checkbox behavior.
+- [x] Each root/subproject group exposes an `Agent` entry next to existing project-local management entries.
+- [x] The Agent panel has `AgentHub Agent` and `本地 Agent` tabs.
+- [x] The `AgentHub Agent` tab lists center agents with source context, truth tool, truth role, name, description, slug, and compact row actions.
+- [x] Tool checkboxes only appear for tools that are enabled/available for the current project group and convertible by AgentHub.
+- [x] Enabling a target writes the fixed native file path for that tool and slug under the current `targetRootPath`.
+- [x] Enabling stores a ProjectAgentTarget binding with project id, target root path, tool id, agent id, output path, applied source hash, applied output hash, and applied time.
+- [x] New writes create parent directories as needed.
+- [x] Existing same-path unmanaged files are not overwritten in this slice; they return a conflict result for the follow-up conflict flow.
+- [x] The UI shows successful writes through the shared toast pattern and refreshes the panel state.
+- [x] Tests cover root and subproject target paths, visible target tools, native output content for all MVP tools, binding persistence, current status after write, conflict-on-existing-file, and UI checkbox behavior.
 
 ## Blocked by
 

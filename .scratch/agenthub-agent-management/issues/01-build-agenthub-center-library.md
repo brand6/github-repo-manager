@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: ready-for-human
 
 # Build AgentHub center library
 
@@ -14,14 +14,14 @@ This slice establishes the app-owned AgentHub library and source grouping only. 
 
 ## Acceptance criteria
 
-- [ ] A top-level `AgentHub` entry is available next to the existing global hub/navigation entries.
-- [ ] AgentHub persists an app-owned library root under the selected data directory.
-- [ ] The backend stores AgentHub source records and agent records with stable `agentId`, stable `slug`, `sourceTruthTool`, `truthRole`, `sourceFormat`, `nativePath`, parsed projection, native metadata, source relative path, optional category, and content hash.
-- [ ] The backend exposes an AgentHub list endpoint that returns sources and agents, grouped consistently with the existing Hub list patterns.
-- [ ] The AgentHub page renders an empty state, search input, source grouping shell, and import/re-import entry points without requiring imported agents.
-- [ ] Center rows show lightweight truth tool and truth role labels when records exist.
-- [ ] AgentHub search covers name, description, slug, source label, truth tool, truth role, native path, source relative path, and category.
-- [ ] Tests cover default library initialization, empty list API behavior, source/agent persistence, stable slug storage, search behavior, and UI navigation to AgentHub.
+- [x] A top-level `AgentHub` entry is available next to the existing global hub/navigation entries.
+- [x] AgentHub persists an app-owned library root under the selected data directory.
+- [x] The backend stores AgentHub source records and agent records with stable `agentId`, stable `slug`, `sourceTruthTool`, `truthRole`, `sourceFormat`, `nativePath`, parsed projection, native metadata, source relative path, optional category, and content hash.
+- [x] The backend exposes an AgentHub list endpoint that returns sources and agents, grouped consistently with the existing Hub list patterns.
+- [x] The AgentHub page renders an empty state, search input, source grouping shell, and import/re-import entry points without requiring imported agents.
+- [x] Center rows show lightweight truth tool and truth role labels when records exist.
+- [x] AgentHub search covers name, description, slug, source label, truth tool, truth role, native path, source relative path, and category.
+- [x] Tests cover default library initialization, empty list API behavior, source/agent persistence, stable slug storage, search behavior, and UI navigation to AgentHub.
 
 ## Blocked by
 

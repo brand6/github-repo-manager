@@ -229,6 +229,228 @@ export interface SkillHubList {
   sources: SkillHubSource[];
 }
 
+export type AgentHubToolId = Extract<ToolId, "claude" | "codex" | "opencode" | "cursor" | "qwen">;
+export const agentHubToolIds = ["claude", "codex", "opencode", "cursor", "qwen"] as const;
+
+export function isAgentHubToolId(value: unknown): value is AgentHubToolId {
+  return typeof value === "string" && (agentHubToolIds as readonly string[]).includes(value);
+}
+
+export type AgentHubSourceType = "builtin" | "local-import";
+export type AgentHubSourceFormat = "markdown" | "toml" | "mdc";
+export type AgentHubTruthRole = "subagent" | "custom-agent" | "rule";
+export type AgentHubTargetStatus = "current" | "outdated" | "drifted" | "missing" | "unmanaged" | "invalid";
+export type AgentHubImportConflictAction = "overwrite" | "rename" | "skip";
+export type AgentHubApplyConflictMode = "overwrite" | "migrate-then-overwrite" | "replace-managed";
+export type AgentHubDisableMode = "keep-file" | "delete-with-backup";
+
+export interface AgentHubConfig {
+  rootDir: string;
+  libraryDir: string;
+}
+
+export interface AgentHubProjection {
+  name: string;
+  description: string | null;
+  body: string;
+  slugCandidate: string;
+  parseWarnings: string[];
+}
+
+export interface AgentHubSource {
+  id: string;
+  type: AgentHubSourceType;
+  label: string;
+  inputPath: string | null;
+  resolvedPath: string | null;
+  sourceTruthTool: AgentHubToolId;
+  importedAt: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentHubAgent {
+  id: string;
+  sourceId: string;
+  sourceType: AgentHubSourceType;
+  sourceTruthTool: AgentHubToolId;
+  truthRole: AgentHubTruthRole;
+  sourceFormat: AgentHubSourceFormat;
+  slug: string;
+  name: string;
+  description: string | null;
+  nativePath: string;
+  libraryRelativePath: string;
+  sourceRelativePath: string | null;
+  category: string | null;
+  projection: AgentHubProjection;
+  nativeMetadata: Record<string, unknown>;
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+  source: AgentHubSource | null;
+}
+
+export interface AgentHubList {
+  config: AgentHubConfig;
+  sources: AgentHubSource[];
+  agents: AgentHubAgent[];
+}
+
+export interface AgentHubImportSkipped {
+  path: string;
+  reason: string;
+}
+
+export interface AgentHubImportConflict {
+  slug: string;
+  incomingPath: string;
+  existingAgent: AgentHubAgent;
+  incomingHash: string;
+}
+
+export interface AgentHubImportConflictResolution {
+  slug: string;
+  action: AgentHubImportConflictAction;
+  renameSlug?: string | null;
+}
+
+export interface AgentHubImportResult {
+  source: AgentHubSource;
+  imported: AgentHubAgent[];
+  updated: AgentHubAgent[];
+  skipped: AgentHubImportSkipped[];
+  conflicts: AgentHubImportConflict[];
+  requiresConfirmation: boolean;
+}
+
+export interface AgentHubConversionPreview {
+  agentId: string;
+  targetToolId: AgentHubToolId;
+  targetPath: string;
+  action: "create" | "overwrite" | "sync" | "replace-managed";
+  sourceTruthTool: AgentHubToolId;
+  truthRole: AgentHubTruthRole;
+  renderedSummary: string;
+  preservedNativeFields: string[];
+  ignoredNativeFields: string[];
+  outputHash: string;
+}
+
+export interface ProjectAgentTarget {
+  id: string;
+  projectId: string;
+  targetRootPath: string;
+  toolId: AgentHubToolId;
+  agentId: string;
+  outputPath: string;
+  appliedSourceHash: string;
+  appliedOutputHash: string;
+  appliedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  agent: AgentHubAgent | null;
+}
+
+export interface ProjectAgentTargetState {
+  projectId: string;
+  targetRootPath: string;
+  toolId: AgentHubToolId;
+  agent: AgentHubAgent;
+  binding: ProjectAgentTarget | null;
+  outputPath: string;
+  status: AgentHubTargetStatus;
+  preview: AgentHubConversionPreview | null;
+  reason: string | null;
+  error: string | null;
+}
+
+export interface ProjectLocalAgent {
+  id: string;
+  projectId: string;
+  targetRootPath: string;
+  toolId: AgentHubToolId;
+  type: "managed" | "unmanaged" | "invalid";
+  outputPath: string;
+  slug: string;
+  name: string | null;
+  description: string | null;
+  status: AgentHubTargetStatus;
+  binding: ProjectAgentTarget | null;
+  agent: AgentHubAgent | null;
+  migratable: boolean;
+  reason: string | null;
+}
+
+export type ProjectLocalAgentMigrationTarget =
+  | { type: "existing-source"; sourceId: string }
+  | { type: "new-source"; label: string; path?: string | null };
+
+export interface ProjectAgentState {
+  projectId: string;
+  targetRootPath: string;
+  toolTargets: ProjectToolTarget[];
+  sources: AgentHubSource[];
+  agents: AgentHubAgent[];
+  targets: ProjectAgentTargetState[];
+  localAgents: ProjectLocalAgent[];
+}
+
+export interface ProjectAgentApplyResult {
+  projectId: string;
+  targetRootPath: string;
+  toolId: AgentHubToolId;
+  agent: AgentHubAgent;
+  binding: ProjectAgentTarget | null;
+  state: ProjectAgentTargetState | null;
+  preview: AgentHubConversionPreview;
+  conflicts: ProjectLocalAgent[];
+  replacedBindings: ProjectAgentTarget[];
+  backups: ProjectLocalFileBackup[];
+  requiresConfirmation: boolean;
+  action: "preview" | "applied" | "needs-confirmation";
+}
+
+export interface ProjectAgentSyncSkipped {
+  projectId: string;
+  targetRootPath: string;
+  toolId: AgentHubToolId;
+  agentId: string;
+  status: AgentHubTargetStatus;
+  reason: string;
+}
+
+export interface ProjectAgentSyncResult {
+  projectId: string;
+  targetRootPath: string;
+  updated: ProjectAgentApplyResult[];
+  skipped: ProjectAgentSyncSkipped[];
+}
+
+export interface ProjectAgentDisableResult {
+  projectId: string;
+  targetRootPath: string;
+  binding: ProjectAgentTarget;
+  removed: boolean;
+  deletedFile: boolean;
+  backups: ProjectLocalFileBackup[];
+  requiresConfirmation: boolean;
+  status: AgentHubTargetStatus;
+}
+
+export interface ProjectLocalAgentMigrationResult {
+  projectId: string;
+  targetRootPath: string;
+  localAgent: ProjectLocalAgent;
+  source: AgentHubSource | null;
+  agent: AgentHubAgent | null;
+  binding: ProjectAgentTarget | null;
+  conflicts: AgentHubImportConflict[];
+  requiresConfirmation: boolean;
+  action: "migrated" | "overwritten" | "renamed" | "needs-confirmation" | "cancelled";
+}
+
 export type PluginHubSourceKind = "library" | "single-plugin";
 export type PluginHubPluginKind = "source" | "custom";
 export type PluginHubComponentType = "skill" | "agent" | "mcp" | "hook";
@@ -385,7 +607,7 @@ export interface ProjectLocalFileBackup {
   backupPath: string;
   metadataPath: string;
   hub: string;
-  targetResourceType: "skill" | "private-file";
+  targetResourceType: "skill" | "private-file" | "agent";
   createdAt: string;
 }
 
