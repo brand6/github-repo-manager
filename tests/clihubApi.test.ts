@@ -67,7 +67,7 @@ describe("CliHub API", () => {
       .send({ installCommand: "npm install -g internal-cli" })
       .expect(201);
     expect(customCommand.body).toMatchObject({ sourceState: "install-command", commandNames: ["internal"] });
-    expect(runner.executed).toContain("npm install -g internal-cli");
+    expect(runner.executed).not.toContain("npm install -g internal-cli");
 
     const tools = await request(app).get("/api/tools/status").set("x-local-api-token", context.token).expect(200);
     expect(tools.body.map((tool: { toolId: string }) => tool.toolId)).not.toContain(customLocal.body.cliId);
@@ -93,12 +93,24 @@ describe("CliHub API", () => {
     context = new AppContext(directory, { cliHub: { commandRunner: runner, pathManager } });
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
-    const installed = await request(app)
-      .post("/api/clihub/clis/codex/install")
+    const launchedInstall = await request(app)
+      .post("/api/clihub/clis/codex/install-terminal")
       .set("x-local-api-token", context.token)
-      .send({ channelId: "codex:npm" })
+      .send({ channelId: "codex:npm", dryRun: true })
       .expect(200);
-    expect(installed.body).toMatchObject({ availabilityState: "available", currentProvider: { provider: "npm" } });
+    expect(launchedInstall.body).toMatchObject({
+      launched: true,
+      command: { command: "npm", args: ["install", "-g", "@openai/codex"], cwd: directory }
+    });
+    expect(runner.executed).not.toContain("npm install -g @openai/codex");
+    runner.lookups.codex = ["C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd"];
+
+    const installed = await request(app)
+      .post("/api/clihub/clis/codex/install-terminal/complete?channelId=codex%3Anpm")
+      .set("x-local-api-token", context.token)
+      .send({ exitCode: 0 })
+      .expect(200);
+    expect(installed.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex")).toMatchObject({ availabilityState: "available", currentProvider: { provider: "npm" } });
 
     const checked = await request(app)
       .post("/api/clihub/clis/codex/check-updates")
@@ -127,6 +139,7 @@ describe("CliHub API", () => {
       message: expect.stringContaining("终端")
     });
 
+    runner.executed.length = 0;
     const completed = await request(app)
       .post("/api/clihub/clis/codex/update-terminal/complete")
       .set("x-local-api-token", context.token)
@@ -134,16 +147,18 @@ describe("CliHub API", () => {
       .expect(200);
     expect(completed.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex")).toMatchObject({
       version: "codex 2.0.0",
-      updateStatus: "up-to-date",
+      updateStatus: "unknown",
       recentOperation: {
         kind: "update",
         status: "success",
-        message: expect.stringContaining("状态已刷新")
+        message: expect.stringContaining("手动检查更新")
       }
     });
+    expect(runner.executed).not.toContain("npm outdated -g --json @openai/codex");
+    expect(runner.executed).not.toContain("npm update -g @openai/codex");
 
-    await request(app).post("/api/clihub/clis/codex/update").set("x-local-api-token", context.token).expect(200);
-    expect(runner.executed).toContain("npm update -g @openai/codex");
+    await request(app).post("/api/clihub/clis/codex/update").set("x-local-api-token", context.token).expect(409);
+    expect(runner.executed).not.toContain("npm update -g @openai/codex");
   });
 });
 

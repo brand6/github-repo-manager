@@ -1,7 +1,9 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AppConfig,
   McpHubCleanupReport,
   McpHubImportFailure,
   McpHubImportResult,
@@ -118,16 +120,16 @@ export function importMcpHubJson(database: AppDatabase, input: string): McpHubIm
   return result;
 }
 
-export function listProjectMcpState(database: AppDatabase, project: Project): ProjectMcpState {
+export function listProjectMcpState(database: AppDatabase, project: Project, config?: AppConfig): ProjectMcpState {
   ensureBuiltInMcpHubServers(database);
-  const toolTargets = listProjectToolTargets(database, project);
+  const toolTargets = listProjectToolTargets(database, project, config);
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
     targets: mcpTargetsForRoot(project.rootPath, toolTargets),
     servers: withBuiltInFlags(database.listMcpHubServers()),
     bindings: database.listProjectMcpBindings(project.id, project.rootPath),
-    localEntries: discoverProjectLocalMcp(database, project)
+    localEntries: discoverProjectLocalMcp(database, project, config)
   };
 }
 
@@ -135,16 +137,24 @@ export function applyProjectMcpServer(
   database: AppDatabase,
   project: Project,
   toolId: McpHubTargetToolId,
-  serverId: string
+  serverId: string,
+  config?: AppConfig
 ): ProjectMcpApplyResult {
   ensureBuiltInMcpHubServers(database);
   const server = database.getMcpHubServer(serverId);
   if (!server) throw new Error("McpHub server 不存在");
-  const toolTarget = listProjectToolTargets(database, project).find((target) => target.toolId === toolId);
+  const toolTarget = listProjectToolTargets(database, project, config).find((target) => target.toolId === toolId);
   if (!toolTarget?.enabled) throw new Error("该工具未在项目中启用");
   const target = mcpTargetForRoot(project.rootPath, toolId);
   if (!target.supported) throw new Error(target.reason ?? "该工具暂不支持项目 MCP");
   const rendered = renderServerForTarget(server, project.rootPath, toolId);
+  const appliedFingerprint = renderedFingerprint(rendered);
+  const existingBinding = database.getProjectMcpBinding(project.id, project.rootPath, toolId, server.serverId);
+  const current = readRenderedConfigEntry(target.configPath, toolId, server.serverId);
+  if (!existingBinding && current && current.fingerprint !== appliedFingerprint) {
+    throw new Error("同名 MCP entry 已存在且不属于 McpHub，未覆盖本地配置");
+  }
+  ensureMcpBindingCurrent(database, target.configPath, existingBinding);
   writeRenderedConfig(target.configPath, toolId, server.serverId, rendered);
   const timestamp = nowIso();
   const binding = database.upsertProjectMcpBinding({
@@ -153,6 +163,7 @@ export function applyProjectMcpServer(
     toolId,
     serverId: server.serverId,
     appliedServerId: server.serverId,
+    appliedFingerprint,
     appliedAt: timestamp
   });
 
@@ -171,8 +182,11 @@ export function disableProjectMcpServer(
   database: AppDatabase,
   project: Project,
   toolId: McpHubTargetToolId,
-  serverId: string
+  serverId: string,
+  config?: AppConfig
 ): ProjectMcpDisableResult {
+  const toolTarget = listProjectToolTargets(database, project, config).find((target) => target.toolId === toolId);
+  if (config && !toolTarget?.enabled) throw new Error("该工具未在项目中启用");
   const target = mcpTargetForRoot(project.rootPath, toolId);
   const binding = database.getProjectMcpBinding(project.id, project.rootPath, toolId, serverId);
   if (!binding) {
@@ -188,6 +202,7 @@ export function disableProjectMcpServer(
     };
   }
 
+  ensureMcpBindingCurrent(database, target.configPath, binding);
   const removal = removeRenderedConfigEntry(target.configPath, toolId, serverId);
   database.deleteProjectMcpBinding(project.id, project.rootPath, toolId, serverId);
   return {
@@ -213,6 +228,7 @@ export function deleteMcpHubServer(database: AppDatabase, serverId: string): Mcp
   for (const binding of bindings) {
     const configPath = mcpTargetForRoot(binding.targetRootPath, binding.toolId).configPath;
     try {
+      ensureMcpBindingCurrent(database, configPath, binding);
       const removal = removeRenderedConfigEntry(configPath, binding.toolId, binding.serverId);
       if (removal.modified) modifiedFiles.add(configPath);
       if (removal.missing) skippedMissingFiles.add(configPath);
@@ -238,9 +254,10 @@ export function migrateProjectLocalMcp(
   database: AppDatabase,
   project: Project,
   serverId: string,
-  mode: ProjectLocalMcpMigrationMode | null = null
+  mode: ProjectLocalMcpMigrationMode | null = null,
+  config?: AppConfig
 ): ProjectLocalMcpMigrationResult {
-  const entries = discoverProjectLocalMcp(database, project).filter(
+  const entries = discoverProjectLocalMcp(database, project, config).filter(
     (entry): entry is ProjectLocalMcpEntry & { server: McpHubServer } =>
       entry.serverId === serverId && entry.status === "unmanaged" && Boolean(entry.server)
   );
@@ -296,6 +313,7 @@ export function migrateProjectLocalMcp(
       toolId: entry.toolId,
       serverId,
       appliedServerId: serverId,
+      appliedFingerprint: entryFingerprint(entry),
       appliedAt: timestamp
     })
   );
@@ -313,7 +331,7 @@ export function migrateProjectLocalMcp(
   };
 }
 
-function discoverProjectLocalMcp(database: AppDatabase, project: Project): ProjectLocalMcpEntry[] {
+function discoverProjectLocalMcp(database: AppDatabase, project: Project, config?: AppConfig): ProjectLocalMcpEntry[] {
   const bindings = new Map(
     database
       .listProjectMcpBindings(project.id, project.rootPath)
@@ -321,7 +339,7 @@ function discoverProjectLocalMcp(database: AppDatabase, project: Project): Proje
   );
   const entries: ProjectLocalMcpEntry[] = [];
 
-  for (const target of mcpTargetsForRoot(project.rootPath, listProjectToolTargets(database, project))) {
+  for (const target of mcpTargetsForRoot(project.rootPath, listProjectToolTargets(database, project, config))) {
     if (!target.supported || !isMcpHubTargetToolId(target.toolId)) continue;
     const toolId = target.toolId;
     if (!fs.existsSync(target.configPath)) continue;
@@ -611,6 +629,63 @@ function writeRenderedConfig(configPath: string, toolId: McpHubTargetToolId, ser
     return;
   }
   writeCodexMcpSection(configPath, serverId, rendered);
+}
+
+function ensureMcpBindingCurrent(database: AppDatabase, configPath: string, binding: ProjectMcpBinding | null): void {
+  if (!binding) return;
+  const current = readRenderedConfigEntry(configPath, binding.toolId, binding.serverId);
+  if (!current) return;
+  const expected = binding.appliedFingerprint || legacyBindingFingerprint(database, binding);
+  if (!expected || current.fingerprint !== expected) {
+    throw new Error("目标 MCP entry 已被本地修改，未覆盖或删除");
+  }
+}
+
+function legacyBindingFingerprint(database: AppDatabase, binding: ProjectMcpBinding): string | null {
+  const server = database.getMcpHubServer(binding.appliedServerId);
+  if (!server) return null;
+  return renderedFingerprint(renderServerForTarget(server, binding.targetRootPath, binding.toolId));
+}
+
+function entryFingerprint(entry: ProjectLocalMcpEntry): string {
+  const current = readRenderedConfigEntry(entry.filePath, entry.toolId, entry.serverId);
+  if (current) return current.fingerprint;
+  if (entry.server) return renderedFingerprint(renderServerForTarget(entry.server, entry.targetRootPath, entry.toolId));
+  return "";
+}
+
+function readRenderedConfigEntry(
+  configPath: string,
+  toolId: McpHubTargetToolId,
+  serverId: string
+): { value: unknown; fingerprint: string } | null {
+  if (!fs.existsSync(configPath)) return null;
+  if (toolId !== "codex") {
+    const key = jsonServerMapKey(toolId);
+    const root = readJsonObjectFile(configPath);
+    const serverMap = root[key];
+    if (!isRecord(serverMap) || !(serverId in serverMap)) return null;
+    const value = serverMap[serverId];
+    return { value, fingerprint: renderedFingerprint(value) };
+  }
+  const section = parseCodexMcpSections(fs.readFileSync(configPath, "utf8")).find((item) => item.serverId === serverId);
+  return section ? { value: section.value, fingerprint: renderedFingerprint(section.value) } : null;
+}
+
+function renderedFingerprint(value: unknown): string {
+  return crypto.createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function removeRenderedConfigEntry(configPath: string, toolId: McpHubTargetToolId, serverId: string): { modified: boolean; missing: boolean; reason: string | null } {

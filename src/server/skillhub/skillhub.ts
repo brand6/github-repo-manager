@@ -31,7 +31,7 @@ import type { AppDatabase } from "../storage/database.js";
 import { nowIso } from "../core/time.js";
 import { openLocalPath } from "../core/localFilesystem.js";
 import { normalizeFsPath } from "../core/pathUtils.js";
-import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "./links.js";
+import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink, resolveDirectoryLinkTarget } from "./links.js";
 import { listProjectToolTargets } from "./projectSkills.js";
 
 interface ImportOptions {
@@ -289,6 +289,7 @@ export function openSkillHubSkill(database: AppDatabase, skillId: string, target
 export function listProjectLocalSkillsState(database: AppDatabase, project: Project, config?: AppConfig): ProjectLocalSkillsState {
   const toolTargets = listProjectToolTargets(database, project, config);
   const skillHubSkills = database.listSkillHubSkills();
+  const skillHubSkillByLibraryPath = new Map(skillHubSkills.map((skill) => [normalizeFsPath(skill.libraryPath), skill]));
   const skills: ProjectLocalSkill[] = [];
 
   for (const target of toolTargets) {
@@ -298,9 +299,10 @@ export function listProjectLocalSkillsState(database: AppDatabase, project: Proj
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const skillPath = path.join(target.skillDirectory, entry.name);
       if (!hasSkillMarker(skillPath)) continue;
-      const linkedSkill = skillHubSkills.find((skill) => linkPointsTo(skillPath, skill.libraryPath)) ?? null;
+      const linkTarget = resolveLocalSkillLinkTarget(skillPath);
+      const linkedSkill = linkTarget ? (skillHubSkillByLibraryPath.get(normalizeFsPath(linkTarget)) ?? null) : null;
       const metadata = readSkillMetadata(path.join(skillPath, "SKILL.md"));
-      const isLink = fs.lstatSync(skillPath).isSymbolicLink();
+      const isLink = linkTarget !== null;
       const pluginBinding = linkedSkill ? findPluginSkillOwner(database, project.id, target.toolId, skillPath, linkedSkill.id) : null;
       skills.push({
         projectId: project.id,
@@ -326,6 +328,14 @@ export function listProjectLocalSkillsState(database: AppDatabase, project: Proj
     migrationSources: database.listSkillHubSources().filter((source) => source.type === "local"),
     skills
   };
+}
+
+function resolveLocalSkillLinkTarget(skillPath: string): string | null {
+  try {
+    return resolveDirectoryLinkTarget(skillPath);
+  } catch {
+    return null;
+  }
 }
 
 function findPluginSkillOwner(database: AppDatabase, projectId: string, toolId: ToolId, linkPath: string, skillId: string) {

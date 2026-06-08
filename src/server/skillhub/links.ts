@@ -24,14 +24,18 @@ export function removeDirectoryLink(linkPath: string): { removed: boolean; missi
 
 export function linkPointsTo(linkPath: string, targetPath: string): boolean {
   try {
-    const stat = fs.lstatSync(linkPath);
-    if (!stat.isSymbolicLink()) return false;
-    const current = fs.readlinkSync(linkPath);
-    const resolved = path.resolve(path.dirname(linkPath), current);
-    return path.resolve(resolved) === path.resolve(targetPath) || path.resolve(current) === path.resolve(targetPath);
+    const resolved = resolveDirectoryLinkTarget(linkPath);
+    return resolved !== null && comparablePath(resolved) === comparablePath(targetPath);
   } catch {
     return false;
   }
+}
+
+export function resolveDirectoryLinkTarget(linkPath: string): string | null {
+  const stat = fs.lstatSync(linkPath);
+  if (!stat.isSymbolicLink()) return null;
+  const current = fs.readlinkSync(linkPath);
+  return path.resolve(path.dirname(linkPath), current);
 }
 
 export function pathExists(linkPath: string): boolean {
@@ -46,6 +50,12 @@ export function pathExists(linkPath: string): boolean {
 
 function isMissingPathError(error: unknown): boolean {
   return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function comparablePath(input: string): string {
+  const withoutExtendedPrefix = input.startsWith("\\\\?\\") || input.startsWith("//?/") ? input.slice(4) : input;
+  const normalized = path.normalize(path.resolve(withoutExtendedPrefix));
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function retryFilesystemOperation<T>(operation: () => T): T {

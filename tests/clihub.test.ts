@@ -6,11 +6,16 @@ import {
   addCustomInstallCommandCli,
   addCustomLocalPathCli,
   checkCliHubUpdates,
+  completeCliHubTerminalInstall,
+  completeCliHubTerminalUpdate,
+  createCliHubInstallLaunchPlan,
+  createCliHubUpdateLaunchPlan,
   installCliHubCli,
   listCliHub,
   parseCliHubInstallCommand,
   refreshCliHubDiscovery,
   updateCliHubCli,
+  withCliHubInstallCompletionCallback,
   withCliHubUpdateCompletionCallback,
   type CliHubCommandResult,
   type CliHubCommandRunner
@@ -410,34 +415,24 @@ describe("CliHub", () => {
 
     const command = await addCustomInstallCommandCli(db, { installCommand: "npm install -g internal-cli" }, { commandRunner: runner });
     expect(command).toMatchObject({ sourceState: "install-command", commandNames: ["internal"] });
-    expect(runner.executed).toContain("npm install -g internal-cli");
+    expect(command.channels[0]).toMatchObject({ provider: "npm", installCommand: ["npm", "install", "-g", "internal-cli"] });
+    expect(runner.executed).not.toContain("npm install -g internal-cli");
     const powershellInstaller = await addCustomInstallCommandCli(
       db,
       { installCommand: "irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex" },
       { commandRunner: runner }
     );
     expect(powershellInstaller).toMatchObject({ sourceState: "install-command", commandNames: ["codegraph"] });
-    expect(runner.executed).toContain("powershell -NoProfile -ExecutionPolicy Bypass -Command irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex");
-    await expect(
-      addCustomInstallCommandCli(
-        db,
-        { installCommand: "npm install -g broken-cli" },
-        {
-          commandRunner: new FakeCliRunner({
-            runs: {
-              "npm install -g broken-cli": { exitCode: 1, stdout: "", stderr: "package not found" }
-            }
-          })
-        }
-      )
-    ).rejects.toThrow("CLI 安装失败");
-    expect(db.listCliHubClis().some((cli) => cli.commandNames.includes("broken"))).toBe(false);
+    expect(runner.executed).not.toContain("powershell -NoProfile -ExecutionPolicy Bypass -Command irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex");
+    const broken = await addCustomInstallCommandCli(db, { installCommand: "npm install -g broken-cli" }, { commandRunner: runner });
+    expect(broken).toMatchObject({ sourceState: "install-command", commandNames: ["broken"] });
+    expect(runner.executed).not.toContain("npm install -g broken-cli");
     await expect(addCustomInstallCommandCli(db, { installCommand: "internal-cli" }, { commandRunner: runner })).rejects.toThrow("不能只填写");
 
     db.close();
   });
 
-  it("blocks second-provider installs and runs same-provider update commands", async () => {
+  it("blocks second-provider installs and launches provider installs and updates through terminal plans", async () => {
     directory = testDir("clihub-install-update");
     const db = new AppDatabase(directory);
     listCliHub(db);
@@ -458,16 +453,23 @@ describe("CliHub", () => {
       }
     });
 
-    const installed = await installCliHubCli(db, directory, "codex", "codex:npm", { commandRunner: runner });
-    expect(installed).toMatchObject({ availabilityState: "available", currentProvider: { provider: "npm" } });
-    await expect(installCliHubCli(db, directory, "codex", "codex:winget", { commandRunner: runner })).rejects.toThrow("已阻止安装第二份");
+    const installPlan = await createCliHubInstallLaunchPlan(db, "codex", "codex:npm", directory, { commandRunner: runner });
+    expect(installPlan.command).toEqual({ command: "npm", args: ["install", "-g", "@openai/codex"], cwd: directory });
+    expect(runner.executed).not.toContain("npm install -g @openai/codex");
+    runner.lookups.codex = ["C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd"];
+    const installedList = await completeCliHubTerminalInstall(db, directory, "codex", "codex:npm", { exitCode: 0 }, { commandRunner: runner });
+    expect(installedList.clis.find((cli) => cli.cliId === "codex")).toMatchObject({ availabilityState: "available", currentProvider: { provider: "npm" } });
+    await expect(createCliHubInstallLaunchPlan(db, "codex", "codex:winget", directory, { commandRunner: runner })).rejects.toThrow("已阻止安装第二份");
 
     const checked = await checkCliHubUpdates(db, "codex", { commandRunner: runner });
     expect(checked.operation).toBeNull();
     expect(checked.clis.find((cli) => cli.cliId === "codex")).toMatchObject({ updateStatus: "update-available" });
-    await updateCliHubCli(db, "codex", { commandRunner: runner });
-    expect(runner.executed).toContain("npm update -g @openai/codex");
-    expect(runner.runOptions.get("npm update -g @openai/codex")?.timeoutMs).toBeGreaterThan(30000);
+    const updatePlan = createCliHubUpdateLaunchPlan(db, "codex", directory);
+    expect(updatePlan.command).toEqual({ command: "npm", args: ["update", "-g", "@openai/codex"], cwd: directory });
+    await expect(updateCliHubCli(db, "codex", { commandRunner: runner })).rejects.toThrow("可见 PowerShell");
+    await completeCliHubTerminalUpdate(db, "codex", { exitCode: 0 }, { commandRunner: runner });
+    expect(runner.executed).not.toContain("npm update -g @openai/codex");
+    expect(db.getCliHubCli("codex")?.recentOperation?.message).toContain("手动检查更新");
 
     db.close();
   });
@@ -503,7 +505,11 @@ describe("CliHub", () => {
         }
       };
 
-      const installed = await installCliHubCli(db, directory, "cursor", "cursor:official-windows", { commandRunner: runner, pathManager });
+      const plan = await createCliHubInstallLaunchPlan(db, "cursor", "cursor:official-windows", directory, { commandRunner: runner, pathManager });
+      expect(plan.commandText).toBe("powershell -NoProfile -ExecutionPolicy Bypass -Command \"iex (irm 'https://cursor.com/install?win32=true')\"");
+      expect(runner.executed).not.toContain("powershell -NoProfile -ExecutionPolicy Bypass -Command iex (irm 'https://cursor.com/install?win32=true')");
+      const installedList = await completeCliHubTerminalInstall(db, directory, "cursor", "cursor:official-windows", { exitCode: 0 }, { commandRunner: runner, pathManager });
+      const installed = installedList.clis.find((cli) => cli.cliId === "cursor");
 
       expect(installed).toMatchObject({
         availabilityState: "available",
@@ -548,7 +554,12 @@ describe("CliHub", () => {
         async refreshProcessPath() {}
       };
 
-      const installed = await installCliHubCli(db, directory, "cursor", "cursor:official-windows", { commandRunner: runner, pathManager });
+      const plan = await createCliHubInstallLaunchPlan(db, "cursor", "cursor:official-windows", directory, { commandRunner: runner, pathManager });
+      expect(plan.command.command).toBe("powershell");
+      fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+      fs.writeFileSync(cursorPath, "binary", "utf8");
+      const installedList = await completeCliHubTerminalInstall(db, directory, "cursor", "cursor:official-windows", { exitCode: 0 }, { commandRunner: runner, pathManager });
+      const installed = installedList.clis.find((cli) => cli.cliId === "cursor");
 
       expect(ensuredPaths).toContain(path.dirname(cursorPath));
       expect(installed).toMatchObject({
@@ -625,7 +636,12 @@ describe("CliHub", () => {
         async refreshProcessPath() {}
       };
 
-      const installed = await installCliHubCli(db, directory, "antigravity", "antigravity:official-windows", { commandRunner: runner, pathManager });
+      const plan = await createCliHubInstallLaunchPlan(db, "antigravity", "antigravity:official-windows", directory, { commandRunner: runner, pathManager });
+      expect(plan.command.command).toBe("powershell");
+      fs.mkdirSync(path.dirname(agyPath), { recursive: true });
+      fs.writeFileSync(agyPath, "binary", "utf8");
+      const installedList = await completeCliHubTerminalInstall(db, directory, "antigravity", "antigravity:official-windows", { exitCode: 0 }, { commandRunner: runner, pathManager });
+      const installed = installedList.clis.find((cli) => cli.cliId === "antigravity");
 
       expect(ensuredPaths).toContain(path.dirname(agyPath));
       expect(installed).toMatchObject({
@@ -685,26 +701,24 @@ describe("CliHub", () => {
       currentProvider: { provider: "npm", packageId: "opencode-ai", confidence: "high", reason: "test" },
       updateStatus: "update-available"
     });
-    const runner = new FakeCliRunner({
-      runs: {
-        "npm update -g opencode-ai": {
-          exitCode: 1,
-          stdout: "",
-          stderr: "EEXIST: file already exists, mkdir 'C:\\Users\\tester\\.config\\opencode'"
-        }
-      }
-    });
+    const runner = new FakeCliRunner();
 
     try {
-      await expect(updateCliHubCli(db, "opencode", { commandRunner: runner })).rejects.toThrow("EEXIST");
+      await completeCliHubTerminalUpdate(
+        db,
+        "opencode",
+        { exitCode: 1, stderr: "EEXIST: file already exists, mkdir 'C:\\Users\\tester\\.config\\opencode'" },
+        { commandRunner: runner }
+      );
       const failed = db.getCliHubCli("opencode")?.recentOperation;
       expect(failed).toMatchObject({
         kind: "update",
         status: "failed",
         exitCode: 1,
-        message: expect.stringContaining("EEXIST"),
+        message: expect.stringContaining("退出码 1"),
         stderr: expect.stringContaining("C:\\Users\\tester\\.config\\opencode")
       });
+      expect(runner.executed).not.toContain("npm update -g opencode-ai");
     } finally {
       db.close();
     }
@@ -729,7 +743,20 @@ describe("CliHub", () => {
     expect(windowsTerminalArgs).not.toContain("exit $updateExitCode");
 
     const encodedScript = plan.command.args.at(-1);
-    expect(Buffer.from(encodedScript ?? "", "base64").toString("utf16le")).toContain("exit $updateExitCode");
+    expect(Buffer.from(encodedScript ?? "", "base64").toString("utf16le")).toContain("exit $commandExitCode");
+
+    const installPlan = withCliHubInstallCompletionCallback(
+      {
+        cli: { cliId: "qwen" } as CliHubCli,
+        channel: { channelId: "qwen:npm" } as CliHubCli["channels"][number],
+        provider: "npm",
+        command: { command: "npm", args: ["install", "-g", "@qwen-code/qwen-code"], cwd: "E:\\repo" },
+        commandText: "npm install -g @qwen-code/qwen-code"
+      },
+      { url: "http://127.0.0.1:3987/api/clihub/clis/qwen/install-terminal/complete?channelId=qwen%3Anpm", token: "local-token" },
+      "win32"
+    );
+    expect(installPlan.command.args).toEqual(["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", expect.any(String)]);
   });
 
   it("checks winget updates without running upgrade during check", async () => {
@@ -763,9 +790,9 @@ describe("CliHub", () => {
     expect(runner.executed).toContain("winget list --id OpenAI.Codex --exact --upgrade-available");
     expect(runner.executed).not.toContain("winget upgrade --id OpenAI.Codex --exact --disable-interactivity");
 
-    await updateCliHubCli(db, "codex", { commandRunner: runner });
-    expect(runner.executed).toContain("winget upgrade --id OpenAI.Codex --exact --disable-interactivity");
-    expect(runner.runOptions.get("winget upgrade --id OpenAI.Codex --exact --disable-interactivity")?.timeoutMs).toBeGreaterThan(30000);
+    const updatePlan = createCliHubUpdateLaunchPlan(db, "codex", directory);
+    expect(updatePlan.command).toEqual({ command: "winget", args: ["upgrade", "--id", "OpenAI.Codex", "--exact", "--disable-interactivity"], cwd: directory });
+    expect(runner.executed).not.toContain("winget upgrade --id OpenAI.Codex --exact --disable-interactivity");
 
     db.close();
   });

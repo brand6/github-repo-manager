@@ -47,12 +47,31 @@ export interface CliHubUpdateLaunchPlan {
   commandText: string;
 }
 
+export interface CliHubInstallLaunchPlan {
+  cli: CliHubCli;
+  channel: CliHubChannel;
+  provider: CliHubProvider;
+  command: LaunchCommand;
+  commandText: string;
+}
+
 export interface CliHubUpdateCompletionCallback {
   url: string;
   token: string;
 }
 
+export interface CliHubInstallCompletionCallback {
+  url: string;
+  token: string;
+}
+
 export interface CliHubTerminalUpdateCompletion {
+  exitCode?: number | null;
+  stdout?: string | null;
+  stderr?: string | null;
+}
+
+export interface CliHubTerminalInstallCompletion {
   exitCode?: number | null;
   stdout?: string | null;
   stderr?: string | null;
@@ -528,23 +547,12 @@ export async function addCustomInstallCommandCli(
   const displayName = input.displayName?.trim() || parsed.displayName;
   const cliId = customCliId("command", commandName, input.installCommand);
   const draft = emptyCli(cliId, displayName, "custom", "custom", "install-command", [commandName]);
-  return operationRunner(options).run(draft, "install", async () => {
-    const installCommand = parsed.channel.installCommand;
-    if (!installCommand?.[0]) throw new Error("安装渠道缺少 installCommand");
-    const startedAt = nowIso();
-    const result = await commandRunner(options).run(installCommand[0], installCommand.slice(1), {
-      timeoutMs: installOrUpdateCommandTimeoutMs
-    });
-    if (result.exitCode !== 0) throw new CliHubCommandError("CLI 安装失败", result);
-    await pathManager(options).refreshProcessPath?.();
-    const cli = database.upsertCliHubCli({
-      ...draft,
-      channels: [parsed.channel],
-      recentOperation: commandOperation("install", "success", parsed.channel.provider, startedAt, result, "CLI 安装完成")
-    });
-    await refreshCliHubDiscovery(database, cli.cliId, options);
-    return requiredCli(database, cli.cliId);
+  const cli = database.upsertCliHubCli({
+    ...draft,
+    channels: [parsed.channel]
   });
+  await refreshCliHubDiscovery(database, cli.cliId, options);
+  return requiredCli(database, cli.cliId);
 }
 
 export function addCliHubChannel(database: AppDatabase, cliId: string, installCommand: string): CliHubCli {
@@ -581,10 +589,8 @@ export async function installCliHubCli(
       if (channel.provider === "github-release" || channel.appManaged) {
         result = await installManagedBinary(cli, channel, dataDir, manager);
       } else {
-        if (!channel.installCommand) throw new Error("安装渠道缺少 installCommand");
-        result = await commandRunner(options).run(channel.installCommand[0] ?? "", channel.installCommand.slice(1), {
-          timeoutMs: installOrUpdateCommandTimeoutMs
-        });
+        if (channel.installCommand) throw new Error("命令型安装必须通过可见 PowerShell 终端执行");
+        throw new Error("安装渠道缺少 installCommand");
       }
       if (result.exitCode !== 0) throw new CliHubCommandError("CLI 安装失败", result);
       await manager.refreshProcessPath?.();
@@ -618,28 +624,36 @@ export async function checkCliHubUpdates(
 
 export async function updateCliHubCli(database: AppDatabase, cliId: string, options: CliHubRuntimeOptions = {}): Promise<CliHubCli> {
   ensureBuiltInCliHubClis(database);
-  const initial = requiredCli(database, cliId);
-  return operationRunner(options).run(initial, "update", async () => {
-    const cli = requiredCli(database, cliId);
-    const provider = cli.currentProvider;
-    if (!provider || provider.confidence !== "high") throw new Error("当前 CLI 没有明确 provider，不能执行更新");
-    if (provider.provider === "local-path") throw new Error("本地路径 CLI 不支持更新");
-    const channel = matchingChannel(cli, provider);
-    const command = updateCommandFor(channel, provider);
-    if (!command) throw new Error("当前 provider 没有明确更新命令");
-    const startedAt = nowIso();
-    try {
-      const result = await commandRunner(options).run(command[0] ?? "", command.slice(1), { timeoutMs: installOrUpdateCommandTimeoutMs });
-      if (result.exitCode !== 0) throw new CliHubCommandError("CLI 更新失败", result);
-      storeOperation(database, cli, commandOperation("update", "success", provider.provider, startedAt, result, "CLI 更新完成"));
-      await refreshCliHubDiscovery(database, cliId, options);
-      return requiredCli(database, cliId);
-    } catch (error) {
-      const result = error instanceof CliHubCommandError ? error.result : { exitCode: 1, stdout: "", stderr: errorMessage(error) };
-      storeOperation(database, cli, commandOperation("update", "failed", provider.provider, startedAt, result, errorMessage(error)));
-      throw error;
-    }
-  });
+  requiredCli(database, cliId);
+  throw new Error("CLI 更新必须通过可见 PowerShell 终端执行");
+}
+
+export async function createCliHubInstallLaunchPlan(
+  database: AppDatabase,
+  cliId: string,
+  channelId: string | null | undefined,
+  cwd: string,
+  options: CliHubRuntimeOptions = {}
+): Promise<CliHubInstallLaunchPlan> {
+  ensureBuiltInCliHubClis(database);
+  await refreshCliHubDiscovery(database, cliId, options);
+  const cli = requiredCli(database, cliId);
+  if (cli.availabilityState === "available") {
+    throw new Error("CLI 已可用，CliHub 已阻止安装第二份 provider");
+  }
+  const channel = channelId ? cli.channels.find((item) => item.channelId === channelId) : cli.channels[0];
+  if (!channel) throw new Error("没有可用安装渠道");
+  if (channel.provider === "github-release" || channel.appManaged) {
+    throw new Error("当前安装渠道由 CliHub 管理，不需要打开 PowerShell 终端");
+  }
+  if (!channel.installCommand?.[0]) throw new Error("安装渠道缺少 installCommand");
+  return {
+    cli,
+    channel,
+    provider: channel.provider,
+    command: { command: channel.installCommand[0], args: channel.installCommand.slice(1), cwd },
+    commandText: formatCommandLine(channel.installCommand)
+  };
 }
 
 export function createCliHubUpdateLaunchPlan(database: AppDatabase, cliId: string, cwd: string): CliHubUpdateLaunchPlan {
@@ -669,10 +683,48 @@ export function withCliHubUpdateCompletionCallback(
     ...plan,
     command: {
       command: "powershell.exe",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShellCommand(terminalUpdateCompletionScript(plan.command, callback))],
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShellCommand(terminalCompletionScript(plan.command, callback))],
       cwd: plan.command.cwd
     }
   };
+}
+
+export function withCliHubInstallCompletionCallback(
+  plan: CliHubInstallLaunchPlan,
+  callback: CliHubInstallCompletionCallback,
+  platform: NodeJS.Platform = process.platform
+): CliHubInstallLaunchPlan {
+  if (platform !== "win32") return plan;
+  return {
+    ...plan,
+    command: {
+      command: "powershell.exe",
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShellCommand(terminalCompletionScript(plan.command, callback))],
+      cwd: plan.command.cwd
+    }
+  };
+}
+
+export function recordCliHubInstallTerminalLaunch(
+  database: AppDatabase,
+  plan: CliHubInstallLaunchPlan,
+  launch: { launched: boolean; host: string; reason: string | null }
+): CliHubCli {
+  const startedAt = nowIso();
+  const message = launch.launched ? `已打开 ${launchHostLabel(launch.host)} 执行安装，实时状态以终端输出为准` : launch.reason ?? "安装终端启动失败";
+  storeOperation(
+    database,
+    plan.cli,
+    commandOperation(
+      "install",
+      launch.launched ? "success" : "failed",
+      plan.provider,
+      startedAt,
+      { exitCode: nullCode(), stdout: plan.commandText, stderr: launch.launched ? "" : message },
+      message
+    )
+  );
+  return requiredCli(database, plan.cli.cliId);
 }
 
 export function recordCliHubUpdateTerminalLaunch(
@@ -695,6 +747,44 @@ export function recordCliHubUpdateTerminalLaunch(
     )
   );
   return requiredCli(database, plan.cli.cliId);
+}
+
+export async function completeCliHubTerminalInstall(
+  database: AppDatabase,
+  dataDir: string,
+  cliId: string,
+  channelId: string | null | undefined,
+  completion: CliHubTerminalInstallCompletion,
+  options: CliHubRuntimeOptions = {}
+): Promise<CliHubList> {
+  ensureBuiltInCliHubClis(database);
+  const cli = requiredCli(database, cliId);
+  const channel = channelId ? cli.channels.find((item) => item.channelId === channelId) : cli.channels[0] ?? null;
+  const provider = channel?.provider ?? null;
+  const startedAt = nowIso();
+  const exitCode = completionExitCode(completion.exitCode);
+  const result = {
+    exitCode,
+    stdout: completion.stdout ?? "",
+    stderr: completion.stderr ?? ""
+  };
+
+  if (exitCode !== 0) {
+    storeOperation(database, cli, commandOperation("install", "failed", provider, startedAt, result, `终端安装命令失败，退出码 ${exitCode}`));
+    return listCliHub(database, options);
+  }
+
+  storeOperation(database, cli, commandOperation("install", "success", provider, startedAt, result, "终端安装完成，正在刷新状态"));
+  const manager = pathManager(options);
+  await manager.refreshProcessPath?.();
+  await ensureKnownCliInstallDirectoriesOnPath(cli, manager);
+  await refreshCliHubDiscovery(database, cliId, options);
+  const refreshed = requiredCli(database, cliId);
+  database.upsertCliHubCli({
+    ...refreshed,
+    recentOperation: commandOperation("install", "success", provider, startedAt, result, terminalInstallCompletionMessage(refreshed.availabilityState))
+  });
+  return listCliHub(database, options);
 }
 
 export async function completeCliHubTerminalUpdate(
@@ -721,11 +811,13 @@ export async function completeCliHubTerminalUpdate(
 
   storeOperation(database, cli, commandOperation("update", "success", provider, startedAt, result, "终端更新完成，正在刷新状态"));
   await refreshCliHubDiscovery(database, cliId, options);
-  await checkOneCliUpdate(database, requiredCli(database, cliId), options);
   const refreshed = requiredCli(database, cliId);
   database.upsertCliHubCli({
     ...refreshed,
-    recentOperation: commandOperation("update", "success", provider, startedAt, result, terminalUpdateCompletionMessage(refreshed.updateStatus))
+    updateStatus: "unknown",
+    updateCheckedAt: null,
+    updateError: null,
+    recentOperation: commandOperation("update", "success", provider, startedAt, result, terminalUpdateCompletionMessage())
   });
   return listCliHub(database, options);
 }
@@ -1159,10 +1251,12 @@ function commandErrorMessage(message: string, result: CliHubCommandResult): stri
   return detail ? `${message}：${clipText(detail)}` : message;
 }
 
-function terminalUpdateCompletionMessage(updateStatus: CliHubCli["updateStatus"]): string {
-  if (updateStatus === "up-to-date") return "终端更新完成，状态已刷新：已是最新版本";
-  if (updateStatus === "update-available") return "终端更新完成，状态已刷新：仍检测到可更新";
-  return "终端更新完成，状态已刷新：更新状态未知";
+function terminalInstallCompletionMessage(availabilityState: CliHubCli["availabilityState"]): string {
+  return availabilityState === "available" ? "终端安装完成，发现状态已刷新" : "终端安装完成，发现状态已刷新：仍未发现 CLI";
+}
+
+function terminalUpdateCompletionMessage(): string {
+  return "终端更新完成，发现状态已刷新；需要时请手动检查更新";
 }
 
 function completionExitCode(value: number | null | undefined): number {
@@ -1406,22 +1500,22 @@ function formatCommandLine(parts: string[]): string {
   return parts.map((part) => (/\s/.test(part) ? `"${part.replaceAll("\"", "\\\"")}"` : part)).join(" ");
 }
 
-function terminalUpdateCompletionScript(command: LaunchCommand, callback: CliHubUpdateCompletionCallback): string {
+function terminalCompletionScript(command: LaunchCommand, callback: CliHubUpdateCompletionCallback | CliHubInstallCompletionCallback): string {
   const invoke = ["&", quotePowerShell(command.command), ...command.args.map(quotePowerShell)].join(" ");
   return [
     "$ErrorActionPreference = 'Continue'",
     "$global:LASTEXITCODE = 0",
     invoke,
     "$commandSucceeded = $?",
-    "$updateExitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } elseif ($commandSucceeded) { 0 } else { 1 }",
-    "$body = @{ exitCode = $updateExitCode } | ConvertTo-Json -Compress",
+    "$commandExitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } elseif ($commandSucceeded) { 0 } else { 1 }",
+    "$body = @{ exitCode = $commandExitCode } | ConvertTo-Json -Compress",
     "try {",
     `  Invoke-RestMethod -Method Post -Uri ${quotePowerShell(callback.url)} -Headers @{ 'x-local-api-token' = ${quotePowerShell(callback.token)} } -ContentType 'application/json' -Body $body | Out-Null`,
     "  Write-Host 'Local AI Workbench 已刷新 CliHub 状态。'",
     "} catch {",
     "  Write-Warning \"Local AI Workbench 状态刷新失败：$($_.Exception.Message)\"",
     "}",
-    "exit $updateExitCode"
+    "exit $commandExitCode"
   ].join("; ");
 }
 

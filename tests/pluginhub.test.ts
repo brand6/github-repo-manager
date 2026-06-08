@@ -321,6 +321,41 @@ describe("PluginHub", () => {
     15000
   );
 
+  (gitAvailable() ? it : it.skip)(
+    "prunes stale plugins and skills when a GitHub plugin source removes them",
+    () => {
+      directory = testDir("pluginhub-github-prune");
+      const db = new AppDatabase(directory);
+      const config = configFixture(directory);
+      const repo = path.join(directory, "remote-repo");
+      gitInit(repo);
+      writePlugin(path.join(repo, "plugins", "python-development"), "python-development", [["review", "Python review"]]);
+      writePlugin(path.join(repo, "plugins", "legacy-plugin"), "legacy-plugin", [["legacy-review", "Legacy review"]]);
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "initial"]);
+
+      const imported = importPluginHubGitHubSource(db, config, directory, "owner/repo", { fixturePath: repo });
+      const stalePlugin = imported.plugins.find((plugin) => plugin.name === "legacy-plugin");
+      const staleSkill = imported.importedSkills.find((skill) => skill.sourceRelativePath.startsWith("plugins/legacy-plugin/"));
+      expect(stalePlugin).toBeTruthy();
+      expect(staleSkill).toBeTruthy();
+
+      fs.rmSync(path.join(repo, "plugins", "legacy-plugin"), { recursive: true, force: true });
+      git(repo, ["add", "-A"]);
+      git(repo, ["commit", "-m", "remove legacy plugin"]);
+
+      const updated = updatePluginHubGitHubSource(db, config, directory, imported.source.id);
+
+      expect(updated.plugins.map((plugin) => plugin.name)).toEqual(["python-development"]);
+      expect(updated.skipped).toEqual([]);
+      expect(db.getPluginHubPlugin(stalePlugin?.id ?? "")).toBeNull();
+      expect(db.getSkillHubSkill(staleSkill?.id ?? "")).toBeNull();
+      expect(db.listPluginHubPluginsForSource(imported.source.id).map((plugin) => plugin.name)).toEqual(["python-development"]);
+      db.close();
+    },
+    15000
+  );
+
   it("installs a Codex project plugin as a native repo marketplace package", () => {
     directory = testDir("pluginhub-install");
     const db = new AppDatabase(directory);

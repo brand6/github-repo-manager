@@ -89,6 +89,7 @@ interface DiscoveredPluginMcpDocument {
 
 interface ApplyOptions {
   conflictMode?: "overwrite" | "skip" | null;
+  config?: AppConfig | undefined;
 }
 
 interface PluginHubImportOptions {
@@ -324,6 +325,8 @@ function importPluginHubSource(
   const localSourceId = stableId("pluginhub-source", normalizeFsPath(inputSourcePath));
   const existing = existingById ?? (sourceType === "local" ? database.getPluginHubSource(options.sourceId ?? localSourceId) : database.getPluginHubSourceByResolvedPath(inputSourcePath));
   const sourceId = existing?.id ?? options.sourceId ?? localSourceId;
+  const previousSourcePlugins = database.listPluginHubPluginsForSource(sourceId);
+  const previousSourceSkills = database.listSkillHubSkillsForSource(sourceId);
   const sourcePath = sourceType === "local" ? materializePluginHubLocalSource(dataDir, sourceId, inputSourcePath) : inputSourcePath;
   const discovered = discoverPluginSource(sourcePath, path.basename(inputSourcePath) || "plugin");
   if (discovered.plugins.length === 0) {
@@ -405,7 +408,50 @@ function importPluginHubSource(
     );
   }
 
+  pruneStalePluginHubSourceRecords(database, previousSourcePlugins, previousSourceSkills, plugins, importedSkills, discovered.skipped);
+
   return { source, plugins, importedSkills, skipped: discovered.skipped };
+}
+
+function pruneStalePluginHubSourceRecords(
+  database: AppDatabase,
+  previousPlugins: PluginHubPlugin[],
+  previousSkills: SkillHubSkill[],
+  currentPlugins: PluginHubPlugin[],
+  currentSkills: SkillHubSkill[],
+  skipped: PluginHubImportResult["skipped"]
+): void {
+  const currentPluginIds = new Set(currentPlugins.map((plugin) => plugin.id));
+  for (const plugin of previousPlugins) {
+    if (currentPluginIds.has(plugin.id)) continue;
+    const deleted = deletePluginHubPlugin(database, plugin.id);
+    if (deleted.failures.length > 0) {
+      skipped.push(...deleted.failures.map((failure) => ({ path: failure.path, reason: `stale plugin ${plugin.name} cleanup failed: ${failure.reason}` })));
+    }
+  }
+
+  const currentSkillIds = new Set(currentSkills.map((skill) => skill.id));
+  const livePluginComponentIds = new Set(
+    database
+      .listPluginHubPlugins()
+      .flatMap((plugin) => plugin.componentRefs.map((ref) => ref.componentId))
+  );
+  const liveBindingComponentIds = new Set(
+    database
+      .listProjectPluginBindings()
+      .flatMap((binding) => binding.componentOwnership.map((owner) => owner.componentId))
+  );
+  for (const skill of previousSkills) {
+    if (currentSkillIds.has(skill.id)) continue;
+    if (livePluginComponentIds.has(skill.id) || liveBindingComponentIds.has(skill.id)) continue;
+    const targets = database.listProjectSkillTargetsForSkill(skill.id);
+    if (targets.length > 0) {
+      skipped.push({ path: skill.libraryPath, reason: `stale skill ${skill.folderName} still has project targets` });
+      continue;
+    }
+    fs.rmSync(skill.libraryPath, { recursive: true, force: true });
+    database.deleteSkillHubSkill(skill.id);
+  }
 }
 
 export function createCustomPlugin(database: AppDatabase, dataDir: string, input: PluginHubCustomPluginInput): PluginHubPlugin {
@@ -445,7 +491,7 @@ export function installProjectPlugin(
   const options = typeof dataDirOrOptions === "string" ? maybeOptions : dataDirOrOptions;
   const plugin = database.getPluginHubPlugin(pluginId);
   if (!plugin) throw new Error("PluginHub plugin not found");
-  const toolTarget = projectToolTarget(database, project, toolId);
+  const toolTarget = projectToolTarget(database, project, toolId, options.config);
   if (!toolTarget?.enabled) {
     throw new Error("该工具未在项目中启用");
   }
@@ -471,7 +517,7 @@ export function syncProjectPluginBinding(
   const options = typeof dataDirOrOptions === "string" ? maybeOptions : dataDirOrOptions;
   const binding = database.listProjectPluginBindings(project.id).find((item) => item.id === bindingId);
   if (!binding?.plugin) throw new Error("Project plugin binding not found");
-  const toolTarget = projectToolTarget(database, project, binding.toolId);
+  const toolTarget = projectToolTarget(database, project, binding.toolId, options.config);
   if (!toolTarget?.enabled || !toolTarget.supported) {
     throw new Error(toolTarget?.reason ?? "该工具暂不支持项目 plugin 同步");
   }
@@ -2390,10 +2436,10 @@ function applyAgentPlan(
     project,
     plan.agent.id,
     plan.toolId,
-    options.conflictMode === "overwrite" ? { conflictMode: "overwrite" } : {}
+    options.conflictMode === "overwrite" ? { conflictMode: "overwrite", config: options.config } : { config: options.config }
   );
   if (result.requiresConfirmation && options.conflictMode === "overwrite" && result.preview.action === "replace-managed") {
-    result = applyProjectAgentTarget(database, dataDir, project, plan.agent.id, plan.toolId, { conflictMode: "replace-managed" });
+    result = applyProjectAgentTarget(database, dataDir, project, plan.agent.id, plan.toolId, { conflictMode: "replace-managed", config: options.config });
   }
   return result;
 }
@@ -2463,8 +2509,8 @@ function upsertPluginSkillSource(database: AppDatabase, source: PluginHubSource)
   });
 }
 
-function projectToolTarget(database: AppDatabase, project: Project, toolId: ToolId): ProjectToolTarget | null {
-  return listProjectToolTargets(database, project).find((target) => target.toolId === toolId) ?? null;
+function projectToolTarget(database: AppDatabase, project: Project, toolId: ToolId, config?: AppConfig): ProjectToolTarget | null {
+  return listProjectToolTargets(database, project, config).find((target) => target.toolId === toolId) ?? null;
 }
 
 function pluginHarnessSupport(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles">): PluginHubPlugin["harnessSupport"] {

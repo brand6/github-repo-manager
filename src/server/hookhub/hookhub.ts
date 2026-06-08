@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type {
+  AppConfig,
   HookHubApplyMode,
   HookHubApplyResult,
   HookHubBackupResult,
@@ -46,6 +47,7 @@ interface HookApplyOptions {
   riskNotes?: string | null;
   requiredEnv?: string[];
   gitCommand?: string;
+  config?: AppConfig | undefined;
 }
 
 interface SuiteImportOptions {
@@ -149,13 +151,13 @@ export function importNativeToolHooks(database: AppDatabase, input: NativeImport
   return { action: "created", suite, conflict: null };
 }
 
-export function listProjectHookState(database: AppDatabase, project: Project, query = ""): ProjectHookState {
+export function listProjectHookState(database: AppDatabase, project: Project, query = "", config?: AppConfig): ProjectHookState {
   const suites = database.listHookHubSuites(query);
   const suiteById = new Map(database.listHookHubSuites().map((suite) => [suite.suiteId, suite]));
   const bindings = new Map(database.listProjectHookBindings(project.id, project.rootPath).map((binding) => [binding.toolId, binding]));
   const tools: ProjectHookToolState[] = [];
 
-  for (const toolTarget of listProjectToolTargets(database, project).filter((target) => target.enabled)) {
+  for (const toolTarget of listProjectToolTargets(database, project, config).filter((target) => target.enabled)) {
     if (isHookHubSupportedToolId(toolTarget.toolId)) {
       const binding = bindings.get(toolTarget.toolId) ?? null;
       const suite = binding ? suiteById.get(binding.suiteId) ?? null : null;
@@ -181,9 +183,9 @@ export function writeProjectHooks(
   toolId: HookHubSupportedToolId,
   hooks: unknown,
   input: Partial<HookHubSuiteInput> = {},
-  options: Pick<HookApplyOptions, "gitCommand"> = {}
+  options: Pick<HookApplyOptions, "gitCommand" | "config"> = {}
 ): HookHubApplyResult | ProjectHookToolState {
-  ensureProjectToolEnabled(database, project, toolId);
+  ensureProjectToolEnabled(database, project, toolId, options.config);
   const current = readProjectHooks(project, toolId, database.getProjectHookBinding(project.id, project.rootPath, toolId)?.configPath ?? null);
   if (current.error) throw new Error(current.error);
   const backup = protectBeforeReplacement(project.rootPath, current.configPath, toolId, options);
@@ -251,7 +253,7 @@ export function applyHookHubSuiteToProject(
   suiteId: string,
   options: HookApplyOptions = {}
 ): HookHubApplyResult {
-  ensureProjectToolEnabled(database, project, toolId);
+  ensureProjectToolEnabled(database, project, toolId, options.config);
   const suite = database.getHookHubSuite(suiteId);
   if (!suite) throw new Error("HookHub suite 不存在");
   const payload = suite.payloads[toolId];
@@ -295,7 +297,7 @@ export function applyHookHubSuiteToProject(
   };
 }
 
-export function syncHookHubSuiteToEnabledProjects(database: AppDatabase, suiteId: string, options: Pick<HookApplyOptions, "gitCommand"> = {}) {
+export function syncHookHubSuiteToEnabledProjects(database: AppDatabase, suiteId: string, options: Pick<HookApplyOptions, "gitCommand" | "config"> = {}) {
   const suite = database.getHookHubSuite(suiteId);
   if (!suite) throw new Error("HookHub suite 不存在");
   const updated: HookHubApplyResult[] = [];
@@ -319,8 +321,8 @@ export function syncHookHubSuiteToEnabledProjects(database: AppDatabase, suiteId
   return { suiteId, projectId: null, updated, skipped };
 }
 
-export function syncProjectHooksFromHookHub(database: AppDatabase, project: Project, options: Pick<HookApplyOptions, "gitCommand"> = {}) {
-  const state = listProjectHookState(database, project);
+export function syncProjectHooksFromHookHub(database: AppDatabase, project: Project, options: Pick<HookApplyOptions, "gitCommand" | "config"> = {}) {
+  const state = listProjectHookState(database, project, "", options.config);
   const updated: HookHubApplyResult[] = [];
   const skipped = [];
 
@@ -336,7 +338,7 @@ export function syncProjectHooksFromHookHub(database: AppDatabase, project: Proj
   return { suiteId: null, projectId: project.id, updated, skipped };
 }
 
-export function syncProjectHookToolFromHookHub(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId, options: Pick<HookApplyOptions, "gitCommand"> = {}) {
+export function syncProjectHookToolFromHookHub(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId, options: Pick<HookApplyOptions, "gitCommand" | "config"> = {}) {
   const binding = database.getProjectHookBinding(project.id, project.rootPath, toolId);
   if (!binding) throw new Error("当前工具没有 HookHub binding");
   const state = projectHookToolState(project, toolId, binding, database.getHookHubSuite(binding.suiteId));
@@ -648,8 +650,8 @@ function writeHooksSection(toolId: HookHubSupportedToolId, configPath: string, h
   fs.writeFileSync(configPath, `${stableJson(base, 2)}\n`, "utf8");
 }
 
-function ensureProjectToolEnabled(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId): void {
-  const target = listProjectToolTargets(database, project).find((item) => item.toolId === toolId);
+function ensureProjectToolEnabled(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId, config?: AppConfig): void {
+  const target = listProjectToolTargets(database, project, config).find((item) => item.toolId === toolId);
   if (!target?.enabled) throw new Error("该工具未在项目中启用");
 }
 

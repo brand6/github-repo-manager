@@ -59,13 +59,16 @@ import {
   addCustomInstallCommandCli,
   addCustomLocalPathCli,
   checkCliHubUpdates,
+  completeCliHubTerminalInstall,
   completeCliHubTerminalUpdate,
+  createCliHubInstallLaunchPlan,
   createCliHubUpdateLaunchPlan,
   installCliHubCli,
+  recordCliHubInstallTerminalLaunch,
   listCliHub,
   recordCliHubUpdateTerminalLaunch,
   refreshCliHubDiscovery,
-  updateCliHubCli,
+  withCliHubInstallCompletionCallback,
   withCliHubUpdateCompletionCallback
 } from "../clihub/clihub.js";
 import {
@@ -141,9 +144,11 @@ import { applyRuleSync, commitRuleSyncTarget, createRuleFile, createRuleTemplate
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, unavailableProjectToolIds, updateProjectToolTargets } from "../skillhub/projectSkills.js";
 import type { AppContext } from "../appContext.js";
 import type { SessionIndexRunResult } from "../scanning/sessionIndexService.js";
+import { apiTimingMiddleware } from "./apiTiming.js";
 
 export function installApi(app: Express, context: AppContext): void {
   app.use(express.json({ limit: "1mb" }));
+  app.use("/api", apiTimingMiddleware(context));
 
   app.use("/api", (request, response, next) => {
     const eventStreamToken = request.path === "/events" && typeof request.query.token === "string" ? request.query.token : null;
@@ -515,6 +520,60 @@ export function installApi(app: Express, context: AppContext): void {
   );
 
   app.post(
+    "/api/clihub/clis/:cliId/install-terminal",
+    asyncHandler(async (request, response) => {
+      const dataDir = requireDataDir(context, response);
+      const cliId = stringParam(request, "cliId");
+      if (!dataDir) return;
+      if (!cliId) {
+        response.status(404).json({ error: "clihub-cli-not-found" });
+        return;
+      }
+      try {
+        const channelId = stringBody(request, "channelId");
+        const plan = await createCliHubInstallLaunchPlan(context.database(), cliId, channelId, dataDir, context.cliHubRuntimeOptions());
+        const launchPlan = withCliHubInstallCompletionCallback(plan, {
+          url: `${request.protocol}://${request.get("host")}/api/clihub/clis/${encodeURIComponent(cliId)}/install-terminal/complete?channelId=${encodeURIComponent(plan.channel.channelId)}`,
+          token: context.token
+        });
+        const launch = launchInTerminal(launchPlan.command, {
+          dryRun: Boolean(request.body?.dryRun),
+          windowTarget: "new"
+        });
+        recordCliHubInstallTerminalLaunch(context.database(), plan, launch);
+        response.json({ ...launch, command: plan.command });
+      } catch (error) {
+        response.status(400).json({ error: "clihub-install-terminal-failed", reason: error instanceof Error ? error.message : "clihub-install-terminal-failed" });
+      }
+    })
+  );
+
+  app.post(
+    "/api/clihub/clis/:cliId/install-terminal/complete",
+    asyncHandler(async (request, response) => {
+      const dataDir = requireDataDir(context, response);
+      const cliId = stringParam(request, "cliId");
+      if (!dataDir) return;
+      if (!cliId) {
+        response.status(404).json({ error: "clihub-cli-not-found" });
+        return;
+      }
+      try {
+        const channelId = typeof request.query.channelId === "string" ? request.query.channelId : null;
+        const result = await completeCliHubTerminalInstall(context.database(), dataDir, cliId, channelId, terminalUpdateCompletionBody(request), context.cliHubRuntimeOptions());
+        context.eventHub().emit({
+          type: "clihub:changed",
+          at: new Date().toISOString(),
+          cliId
+        });
+        response.json(result);
+      } catch (error) {
+        response.status(400).json({ error: "clihub-install-terminal-complete-failed", reason: error instanceof Error ? error.message : "clihub-install-terminal-complete-failed" });
+      }
+    })
+  );
+
+  app.post(
     "/api/clihub/clis/:cliId/check-updates",
     asyncHandler(async (request, response) => {
       const cliId = stringParam(request, "cliId");
@@ -541,21 +600,12 @@ export function installApi(app: Express, context: AppContext): void {
     })
   );
 
-  app.post(
-    "/api/clihub/clis/:cliId/update",
-    asyncHandler(async (request, response) => {
-      const cliId = stringParam(request, "cliId");
-      if (!cliId) {
-        response.status(404).json({ error: "clihub-cli-not-found" });
-        return;
-      }
-      try {
-        response.json(await updateCliHubCli(context.database(), cliId, context.cliHubRuntimeOptions()));
-      } catch (error) {
-        response.status(400).json({ error: "clihub-update-failed", reason: error instanceof Error ? error.message : "clihub-update-failed" });
-      }
-    })
-  );
+  app.post("/api/clihub/clis/:cliId/update", (_request, response) => {
+    response.status(409).json({
+      error: "clihub-update-terminal-required",
+      reason: "CLI 更新必须通过可见 PowerShell 终端执行"
+    });
+  });
 
   app.post("/api/clihub/clis/:cliId/update-terminal", (request, response) => {
     const dataDir = requireDataDir(context, response);
@@ -668,7 +718,7 @@ export function installApi(app: Express, context: AppContext): void {
 
   app.post("/api/hookhub/suites/:suiteId/sync", (request, response) => {
     try {
-      response.json(syncHookHubSuiteToEnabledProjects(context.database(), request.params.suiteId));
+      response.json(syncHookHubSuiteToEnabledProjects(context.database(), request.params.suiteId, { config: context.config() }));
     } catch (error) {
       response.status(400).json({ error: "hookhub-suite-sync-failed", reason: error instanceof Error ? error.message : "hookhub-suite-sync-failed" });
     }
@@ -954,9 +1004,18 @@ export function installApi(app: Express, context: AppContext): void {
       }
       try {
         response.json(
-          await executeProjectCliCommand(context.database(), project, cliId, commandId, argsText, context.config(), {
-            dryRun: Boolean(request.body?.dryRun)
-          })
+          await executeProjectCliCommand(
+            context.database(),
+            project,
+            cliId,
+            commandId,
+            argsText,
+            context.config(),
+            context.cliHubRuntimeOptions(),
+            {
+              dryRun: Boolean(request.body?.dryRun)
+            }
+          )
         );
       } catch (error) {
         if (error instanceof ProjectCliActionError) {
@@ -1063,7 +1122,12 @@ export function installApi(app: Express, context: AppContext): void {
     }
     try {
       seedDefaultPluginHubSources(context.database(), context.config(), dataDir);
-      response.json(installProjectPlugin(context.database(), project, request.params.pluginId, toolId, dataDir, { conflictMode: pluginHubConflictModeBody(request) }));
+      response.json(
+        installProjectPlugin(context.database(), project, request.params.pluginId, toolId, dataDir, {
+          conflictMode: pluginHubConflictModeBody(request),
+          config: context.config()
+        })
+      );
     } catch (error) {
       response.status(400).json({ error: "project-plugin-install-failed", reason: error instanceof Error ? error.message : "project-plugin-install-failed" });
     }
@@ -1076,7 +1140,12 @@ export function installApi(app: Express, context: AppContext): void {
     if (!project) return;
     try {
       seedDefaultPluginHubSources(context.database(), context.config(), dataDir);
-      response.json(syncProjectPluginBinding(context.database(), project, request.params.bindingId, dataDir, { conflictMode: pluginHubConflictModeBody(request) }));
+      response.json(
+        syncProjectPluginBinding(context.database(), project, request.params.bindingId, dataDir, {
+          conflictMode: pluginHubConflictModeBody(request),
+          config: context.config()
+        })
+      );
     } catch (error) {
       response.status(400).json({ error: "project-plugin-sync-failed", reason: error instanceof Error ? error.message : "project-plugin-sync-failed" });
     }
@@ -1095,7 +1164,7 @@ export function installApi(app: Express, context: AppContext): void {
   app.get("/api/projects/:id/mcp", (request, response) => {
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) return;
-    response.json(listProjectMcpState(context.database(), project));
+    response.json(listProjectMcpState(context.database(), project, context.config()));
   });
 
   app.put("/api/projects/:id/mcp-bindings/:serverId/:toolId", (request, response) => {
@@ -1107,7 +1176,7 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     try {
-      response.json(applyProjectMcpServer(context.database(), project, toolId, request.params.serverId));
+      response.json(applyProjectMcpServer(context.database(), project, toolId, request.params.serverId, context.config()));
     } catch (error) {
       response.status(400).json({ error: "project-mcp-apply-failed", reason: error instanceof Error ? error.message : "project-mcp-apply-failed" });
     }
@@ -1122,7 +1191,7 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     try {
-      response.json(disableProjectMcpServer(context.database(), project, toolId, request.params.serverId));
+      response.json(disableProjectMcpServer(context.database(), project, toolId, request.params.serverId, context.config()));
     } catch (error) {
       response.status(400).json({ error: "project-mcp-disable-failed", reason: error instanceof Error ? error.message : "project-mcp-disable-failed" });
     }
@@ -1138,7 +1207,7 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     try {
-      response.json(migrateProjectLocalMcp(context.database(), project, serverId, mode));
+      response.json(migrateProjectLocalMcp(context.database(), project, serverId, mode, context.config()));
     } catch (error) {
       response.status(400).json({ error: "project-local-mcp-migration-failed", reason: error instanceof Error ? error.message : "project-local-mcp-migration-failed" });
     }
@@ -1147,14 +1216,14 @@ export function installApi(app: Express, context: AppContext): void {
   app.get("/api/projects/:id/hooks", (request, response) => {
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) return;
-    response.json(listProjectHookState(context.database(), project, String(request.query.query ?? "")));
+    response.json(listProjectHookState(context.database(), project, String(request.query.query ?? ""), context.config()));
   });
 
   app.post("/api/projects/:id/hooks/sync", (request, response) => {
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) return;
     try {
-      response.json(syncProjectHooksFromHookHub(context.database(), project));
+      response.json(syncProjectHooksFromHookHub(context.database(), project, { config: context.config() }));
     } catch (error) {
       response.status(400).json({ error: "project-hooks-sync-failed", reason: error instanceof Error ? error.message : "project-hooks-sync-failed" });
     }
@@ -1169,7 +1238,7 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     try {
-      response.json(writeProjectHooks(context.database(), project, toolId, request.body.hooks, hookHubPartialSuiteInputBody(request)));
+      response.json(writeProjectHooks(context.database(), project, toolId, request.body.hooks, hookHubPartialSuiteInputBody(request), { config: context.config() }));
     } catch (error) {
       response.status(400).json({ error: "project-hooks-write-failed", reason: error instanceof Error ? error.message : "project-hooks-write-failed" });
     }
@@ -1215,7 +1284,7 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     try {
-      response.json(syncProjectHookToolFromHookHub(context.database(), project, toolId));
+      response.json(syncProjectHookToolFromHookHub(context.database(), project, toolId, { config: context.config() }));
     } catch (error) {
       response.status(400).json({ error: "project-hook-sync-failed", reason: error instanceof Error ? error.message : "project-hook-sync-failed" });
     }
@@ -1236,7 +1305,8 @@ export function installApi(app: Express, context: AppContext): void {
           preserveName: stringBody(request, "preserveName"),
           description: stringBody(request, "description"),
           riskNotes: stringBody(request, "riskNotes"),
-          requiredEnv: stringArrayBody(request, "requiredEnv")
+          requiredEnv: stringArrayBody(request, "requiredEnv"),
+          config: context.config()
         })
       );
     } catch (error) {
@@ -1248,13 +1318,13 @@ export function installApi(app: Express, context: AppContext): void {
     const dataDir = requireDataDir(context, response);
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!dataDir || !project) return;
-    response.json(listProjectAgentState(context.database(), dataDir, project, String(request.query.query ?? "")));
+    response.json(listProjectAgentState(context.database(), dataDir, project, String(request.query.query ?? ""), context.config()));
   });
 
   app.get("/api/projects/:id/local-agents", (request, response) => {
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) return;
-    response.json(listProjectLocalAgentState(context.database(), project));
+    response.json(listProjectLocalAgentState(context.database(), project, context.config()));
   });
 
   app.post("/api/projects/:id/agents/sync", (request, response) => {
@@ -1262,7 +1332,7 @@ export function installApi(app: Express, context: AppContext): void {
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!dataDir || !project) return;
     try {
-      response.json(syncProjectAgents(context.database(), dataDir, project));
+      response.json(syncProjectAgents(context.database(), dataDir, project, context.config()));
     } catch (error) {
       response.status(400).json({ error: "project-agent-sync-all-failed", reason: error instanceof Error ? error.message : "project-agent-sync-all-failed" });
     }
@@ -1280,7 +1350,8 @@ export function installApi(app: Express, context: AppContext): void {
     try {
       response.json(
         applyProjectAgentTarget(context.database(), dataDir, project, request.params.agentId, toolId, {
-          conflictMode: agentHubApplyConflictModeBody(request)
+          conflictMode: agentHubApplyConflictModeBody(request),
+          config: context.config()
         })
       );
     } catch (error) {
@@ -1293,7 +1364,7 @@ export function installApi(app: Express, context: AppContext): void {
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!dataDir || !project) return;
     try {
-      response.json(syncProjectAgentTarget(context.database(), dataDir, project, request.params.bindingId));
+      response.json(syncProjectAgentTarget(context.database(), dataDir, project, request.params.bindingId, context.config()));
     } catch (error) {
       response.status(400).json({ error: "project-agent-sync-failed", reason: error instanceof Error ? error.message : "project-agent-sync-failed" });
     }

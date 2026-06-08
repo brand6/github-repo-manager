@@ -35,6 +35,27 @@ describe("API", () => {
     await request(app).get("/api/projects").expect(401);
   });
 
+  it("writes API response timing logs for interface operations", async () => {
+    directory = testDir("api-response-timing");
+    context = new AppContext(directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+
+    const entry = await readTimingLogEntry(directory, (candidate) => candidate.path === "/api/projects");
+    expect(entry).toMatchObject({
+      type: "api-response-time",
+      system: "projects",
+      method: "GET",
+      path: "/api/projects",
+      statusCode: 200,
+      queryKeys: []
+    });
+    expect(typeof entry.durationMs).toBe("number");
+    expect(entry.durationMs).toBeGreaterThanOrEqual(0);
+    expect(typeof entry.slow).toBe("boolean");
+  });
+
   it("adds projects and returns grouped detail", async () => {
     directory = testDir("api-projects");
     const projectRoot = path.join(directory, "repo");
@@ -1132,6 +1153,29 @@ describe("API", () => {
     expect(childGroup).toMatchObject({ sessionCount: 2 });
   });
 });
+
+async function readTimingLogEntry(
+  dataDir: string,
+  predicate: (entry: Record<string, unknown>) => boolean
+): Promise<Record<string, unknown>> {
+  const logPath = path.join(dataDir, "logs", "api-response-times.ndjson");
+  const deadline = Date.now() + 1000;
+
+  while (Date.now() < deadline) {
+    if (fs.existsSync(logPath)) {
+      const entries = fs
+        .readFileSync(logPath, "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const match = entries.find(predicate);
+      if (match) return match;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`API timing log entry was not written to ${logPath}`);
+}
 
 function claudeProjectSource(root: string, cwd: string, fileName: string): string {
   return path.join(root, ".claude", "projects", cwd.replace(/[:\\/]/g, "-"), "subagents", fileName);

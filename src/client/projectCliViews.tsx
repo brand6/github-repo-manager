@@ -101,6 +101,9 @@ function ProjectCliCommandRow({
       <div className="project-cli-action-main">
         <div className="project-cli-action-title">
           <strong>{command.label}</strong>
+          <span className="metric-pill">{modeLabel(command.executionMode)}</span>
+          {command.writesProject ? <span className="metric-pill warning">写项目目录</span> : <span className="metric-pill">只读</span>}
+          {command.requiresConfirmation ? <span className="metric-pill warning">需要确认</span> : null}
           <span className="metric-pill">{command.command}</span>
           <span className="metric-pill">{commandKindLabel(command.kind)}</span>
           {command.version ? <span className="metric-pill">{command.version}</span> : null}
@@ -109,6 +112,12 @@ function ProjectCliCommandRow({
         <dl className="project-cli-action-meta">
           <dt>command</dt>
           <dd>{command.commandText}</dd>
+          {command.affectedPaths.length ? (
+            <>
+              <dt>影响路径</dt>
+              <dd>{command.affectedPaths.join("；")}</dd>
+            </>
+          ) : null}
         </dl>
       </div>
       <label className="project-cli-args-input">

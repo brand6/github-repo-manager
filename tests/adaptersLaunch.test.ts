@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -182,6 +183,22 @@ describe("tool adapters and terminal launcher", () => {
     expect(failed.reason).toContain("目录不存在");
   });
 
+  it("checks executable availability without DEP0190 shell argument warnings", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--throw-deprecation",
+        "--import",
+        "tsx",
+        "-e",
+        "import { isExecutableAvailable } from './src/server/launch/terminal.ts'; isExecutableAvailable('node', 'linux');"
+      ],
+      { cwd: process.cwd(), encoding: "utf8" }
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   it("wraps Windows Terminal launches in PowerShell so command shims resolve", () => {
     const host = buildTerminalHost(
       { command: "opencode", args: ["--session", "ses_1"], cwd: "E:\\repo" },
@@ -192,6 +209,19 @@ describe("tool adapters and terminal launcher", () => {
       kind: "windows-terminal",
       executable: "wt.exe",
       args: ["-w", "new", "new-tab", "-d", "E:\\repo", "powershell.exe", "-NoExit", "-Command", "& 'opencode' '--session' 'ses_1'"]
+    });
+  });
+
+  it("can prefer a visible PowerShell window over Windows Terminal", () => {
+    const host = buildTerminalHost(
+      { command: "git", args: ["branch", "--show-current"], cwd: "E:\\repo" },
+      { platform: "win32", windowsTerminalAvailable: true, preferPowerShell: true }
+    );
+
+    expect(host).toEqual({
+      kind: "powershell",
+      executable: "powershell.exe",
+      args: ["-NoExit", "-Command", "& 'git' 'branch' '--show-current'"]
     });
   });
 

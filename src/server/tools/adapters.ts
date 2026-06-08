@@ -1,17 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { commandAvailable } from "../core/commandAvailability.js";
 import type { AppConfig, LaunchCommand, ProjectResourceDirectoryPreference, SessionEntry, ToolId, ToolStatus } from "../../shared/types.js";
 import type { SkillTargetOptions, ToolAdapter } from "./toolAdapter.js";
-
-function commandAvailable(command: string): boolean {
-  if (path.isAbsolute(command)) return fs.existsSync(command);
-  const lookup = process.platform === "win32" ? "where.exe" : "command";
-  const args = process.platform === "win32" ? [command] : ["-v", command];
-  const result = spawnSync(lookup, args, { stdio: "ignore", shell: process.platform !== "win32" });
-  return result.status === 0;
-}
 
 function status(adapter: ToolAdapter, config: AppConfig): ToolStatus {
   const command = configuredCommand(config, adapter.id);

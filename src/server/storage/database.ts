@@ -392,6 +392,7 @@ export class AppDatabase {
         tool_id TEXT NOT NULL,
         server_id TEXT NOT NULL,
         applied_server_id TEXT NOT NULL REFERENCES mcphub_servers(server_id) ON DELETE CASCADE,
+        applied_fingerprint TEXT NOT NULL DEFAULT '',
         applied_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -474,6 +475,7 @@ export class AppDatabase {
     this.ensureColumn("pluginhub_sources", "source_path", "TEXT");
     this.ensureColumn("pluginhub_sources", "current_revision", "TEXT");
     this.ensureColumn("pluginhub_sources", "checkout_path", "TEXT");
+    this.ensureColumn("project_mcp_bindings", "applied_fingerprint", "TEXT NOT NULL DEFAULT ''");
     this.db.prepare("UPDATE pluginhub_sources SET type = 'local' WHERE type IS NULL").run();
     this.db.prepare("UPDATE pluginhub_sources SET input = input_path WHERE input IS NULL OR input = ''").run();
     this.db.exec(`
@@ -1613,8 +1615,8 @@ export class AppDatabase {
       .prepare(
         `INSERT OR REPLACE INTO project_mcp_bindings (
           project_id, target_root_path, normalized_target_root_path, tool_id, server_id,
-          applied_server_id, applied_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          applied_server_id, applied_fingerprint, applied_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.projectId,
@@ -1623,6 +1625,7 @@ export class AppDatabase {
         input.toolId,
         input.serverId,
         input.appliedServerId,
+        input.appliedFingerprint,
         input.appliedAt,
         createdAt,
         timestamp
@@ -2003,14 +2006,26 @@ export class AppDatabase {
 
   listSessionsForProject(project: Project, query = ""): SessionEntry[] {
     const normalizedQuery = query.trim().toLowerCase();
-    return this.listSessions().filter((session) => {
-      if (!session.normalizedCwd) return false;
-      const inRoot = session.normalizedCwd === project.normalizedRootPath;
-      const inChild = project.includeSubdirectories && isStrictChildPath(project.normalizedRootPath, session.normalizedCwd);
-      if (!inRoot && !inChild) return false;
-      if (!normalizedQuery) return true;
-      return `${session.title}\n${session.summary ?? ""}`.toLowerCase().includes(normalizedQuery);
-    });
+    const where = ["normalized_cwd IS NOT NULL"];
+    const params: string[] = [];
+
+    if (project.includeSubdirectories) {
+      where.push("(normalized_cwd = ? OR normalized_cwd LIKE ? ESCAPE '\\')");
+      params.push(project.normalizedRootPath, `${escapeSqlLike(project.normalizedRootPath)}${escapeSqlLike(path.sep)}%`);
+    } else {
+      where.push("normalized_cwd = ?");
+      params.push(project.normalizedRootPath);
+    }
+
+    if (normalizedQuery) {
+      where.push("lower(title || char(10) || coalesce(summary, '')) LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeSqlLike(normalizedQuery)}%`);
+    }
+
+    return this.db
+      .prepare(`SELECT * FROM sessions WHERE ${where.join(" AND ")} ORDER BY updated_at DESC`)
+      .all(...params)
+      .map((row) => this.sessionFromRow(row));
   }
 
   createProjectDetail(projectId: string, query = "", options: { includeSessions?: boolean } = {}) {
@@ -2497,6 +2512,7 @@ export class AppDatabase {
       toolId: String(row.tool_id) as McpHubTargetToolId,
       serverId: String(row.server_id),
       appliedServerId: String(row.applied_server_id),
+      appliedFingerprint: String(row.applied_fingerprint ?? ""),
       appliedAt: String(row.applied_at),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
@@ -2608,6 +2624,10 @@ function compareNullableIsoDescNullsLast(a: string | null, b: string | null): nu
   if (a) return -1;
   if (b) return 1;
   return 0;
+}
+
+function escapeSqlLike(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
 function latestSessionActivityForProject(normalizedRootPath: string, sessions: SessionEntry[]): string | null {

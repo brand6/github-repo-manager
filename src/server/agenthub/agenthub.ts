@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AppConfig,
   AgentHubAgent,
   AgentHubApplyConflictMode,
   AgentHubConfig,
@@ -106,6 +107,7 @@ export interface RenderAgentForToolResult {
 
 interface ApplyOptions {
   conflictMode?: AgentHubApplyConflictMode | null;
+  config?: AppConfig | undefined;
 }
 
 interface DisableOptions {
@@ -114,6 +116,10 @@ interface DisableOptions {
 
 interface MigrationOptions {
   conflictResolution?: AgentHubImportConflictResolution | null;
+}
+
+interface ProjectAgentTargetStateOptions {
+  binding?: ProjectAgentTarget | null;
 }
 
 const BUILTIN_AGENCY_SOURCE_ID = "agency-agents";
@@ -174,7 +180,7 @@ export function listAgentHub(database: AppDatabase, dataDir: string, query = "",
   return {
     config,
     sources: database.listAgentHubSources(),
-    agents: database.listAgentHubAgents(query)
+    agents: database.listAgentHubAgents(query).map(agentListItem)
   };
 }
 
@@ -345,14 +351,17 @@ export function reparseAgentHubAgent(database: AppDatabase, agentId: string): Ag
   });
 }
 
-export function listProjectAgentState(database: AppDatabase, dataDir: string, project: Project, query = ""): ProjectAgentState {
+export function listProjectAgentState(database: AppDatabase, dataDir: string, project: Project, query = "", config?: AppConfig): ProjectAgentState {
   seedDefaultAgentHubSources(database, dataDir);
-  const toolTargets = listAgentToolTargets(database, project);
+  const toolTargets = listAgentToolTargets(database, project, config);
   const agents = database.listAgentHubAgents(query);
+  const bindingsByOutput = projectAgentBindingsByOutput(database.listProjectAgentTargets(project.id, project.rootPath));
   const targets = agents.flatMap((agent) =>
     toolTargets.map((toolTarget) =>
       isAgentHubToolId(toolTarget.toolId) && toolTarget.supported
-        ? projectAgentTargetState(database, project, agent, toolTarget.toolId)
+        ? projectAgentTargetState(database, project, agent, toolTarget.toolId, {
+            binding: bindingsByOutput.get(projectAgentBindingKey(toolTarget.toolId, adapters[toolTarget.toolId].targetPath(project.rootPath, agent.slug))) ?? null
+          })
         : unsupportedProjectAgentTargetState(project, agent, toolTarget)
     )
   );
@@ -361,22 +370,61 @@ export function listProjectAgentState(database: AppDatabase, dataDir: string, pr
     targetRootPath: project.rootPath,
     toolTargets,
     sources: database.listAgentHubSources(),
-    agents,
-    targets,
-    localAgents: listProjectLocalAgents(database, project)
+    agents: agents.map(agentListItem),
+    targets: targets.map(projectAgentTargetStateListItem),
+    localAgents: listProjectLocalAgents(database, project).map(projectLocalAgentListItem)
   };
 }
 
-export function listProjectLocalAgentState(database: AppDatabase, project: Project): ProjectAgentState {
+export function listProjectLocalAgentState(database: AppDatabase, project: Project, config?: AppConfig): ProjectAgentState {
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
-    toolTargets: listAgentToolTargets(database, project),
+    toolTargets: listAgentToolTargets(database, project, config),
     sources: database.listAgentHubSources().filter((source) => source.type === "local-import"),
     agents: [],
     targets: [],
-    localAgents: listProjectLocalAgents(database, project)
+    localAgents: listProjectLocalAgents(database, project).map(projectLocalAgentListItem)
   };
+}
+
+function agentListItem(agent: AgentHubAgent): AgentHubAgent {
+  return {
+    ...agent,
+    projection: { ...agent.projection, body: "" },
+    nativeMetadata: {}
+  };
+}
+
+function projectAgentBindingListItem(binding: ProjectAgentTarget): ProjectAgentTarget {
+  return {
+    ...binding,
+    agent: binding.agent ? agentListItem(binding.agent) : null
+  };
+}
+
+function projectAgentTargetStateListItem(target: ProjectAgentTargetState): ProjectAgentTargetState {
+  return {
+    ...target,
+    agent: agentListItem(target.agent),
+    binding: target.binding ? projectAgentBindingListItem(target.binding) : null
+  };
+}
+
+function projectLocalAgentListItem(localAgent: ProjectLocalAgent): ProjectLocalAgent {
+  return {
+    ...localAgent,
+    binding: localAgent.binding ? projectAgentBindingListItem(localAgent.binding) : null,
+    agent: localAgent.agent ? agentListItem(localAgent.agent) : null
+  };
+}
+
+function projectAgentBindingsByOutput(bindings: ProjectAgentTarget[]): Map<string, ProjectAgentTarget> {
+  return new Map(bindings.map((binding) => [projectAgentBindingKey(binding.toolId, binding.outputPath), binding]));
+}
+
+function projectAgentBindingKey(toolId: AgentHubToolId, outputPath: string): string {
+  return `${toolId}:${normalizeFsPath(outputPath)}`;
 }
 
 export function applyProjectAgentTarget(
@@ -388,7 +436,7 @@ export function applyProjectAgentTarget(
   options: ApplyOptions = {}
 ): ProjectAgentApplyResult {
   seedDefaultAgentHubSources(database, dataDir);
-  ensureAgentToolEnabled(database, project, toolId);
+  ensureAgentToolEnabled(database, project, toolId, options.config);
   const agent = requireAgent(database, agentId);
   const preview = conversionPreview(agent, toolId, project.rootPath, "create");
   const existingBinding = database.getProjectAgentTargetByOutputPath(project.id, project.rootPath, toolId, preview.targetPath);
@@ -495,7 +543,7 @@ export function applyProjectAgentTarget(
   };
 }
 
-export function syncProjectAgentTarget(database: AppDatabase, dataDir: string, project: Project, bindingId: string): ProjectAgentApplyResult {
+export function syncProjectAgentTarget(database: AppDatabase, dataDir: string, project: Project, bindingId: string, config?: AppConfig): ProjectAgentApplyResult {
   const binding = database.getProjectAgentTarget(bindingId);
   if (!binding || binding.projectId !== project.id || normalizeFsPath(binding.targetRootPath) !== normalizeFsPath(project.rootPath)) {
     throw new Error("AgentHub target binding 不存在");
@@ -503,10 +551,10 @@ export function syncProjectAgentTarget(database: AppDatabase, dataDir: string, p
   const agent = binding.agent ?? requireAgent(database, binding.agentId);
   const state = projectAgentTargetState(database, project, agent, binding.toolId);
   if (state.status !== "outdated") throw new Error("只有 outdated AgentHub target 可以同步");
-  return applyProjectAgentTarget(database, dataDir, project, agent.id, binding.toolId, { conflictMode: "overwrite" });
+  return applyProjectAgentTarget(database, dataDir, project, agent.id, binding.toolId, { conflictMode: "overwrite", config });
 }
 
-export function syncProjectAgents(database: AppDatabase, dataDir: string, project: Project): ProjectAgentSyncResult {
+export function syncProjectAgents(database: AppDatabase, dataDir: string, project: Project, config?: AppConfig): ProjectAgentSyncResult {
   const updated: ProjectAgentApplyResult[] = [];
   const skipped: ProjectAgentSyncResult["skipped"] = [];
   for (const binding of database.listProjectAgentTargets(project.id, project.rootPath)) {
@@ -520,7 +568,7 @@ export function syncProjectAgents(database: AppDatabase, dataDir: string, projec
       if (state.status !== "current") skipped.push(skipFromBinding(binding, state.status, state.reason ?? "不是可批量同步状态"));
       continue;
     }
-    updated.push(applyProjectAgentTarget(database, dataDir, project, agent.id, binding.toolId, { conflictMode: "overwrite" }));
+    updated.push(applyProjectAgentTarget(database, dataDir, project, agent.id, binding.toolId, { conflictMode: "overwrite", config }));
   }
   return { projectId: project.id, targetRootPath: project.rootPath, updated, skipped };
 }
@@ -725,10 +773,17 @@ export function renderAgentForTool(database: AppDatabase, agentId: string, targe
   };
 }
 
-function projectAgentTargetState(database: AppDatabase, project: Project, agent: AgentHubAgent, toolId: AgentHubToolId): ProjectAgentTargetState {
+function projectAgentTargetState(
+  database: AppDatabase,
+  project: Project,
+  agent: AgentHubAgent,
+  toolId: AgentHubToolId,
+  options: ProjectAgentTargetStateOptions = {}
+): ProjectAgentTargetState {
   try {
-    const preview = conversionPreview(agent, toolId, project.rootPath, "sync");
-    const binding = database.getProjectAgentTargetByOutputPath(project.id, project.rootPath, toolId, preview.targetPath);
+    const outputPath = adapters[toolId].targetPath(project.rootPath, agent.slug);
+    const binding =
+      options.binding === undefined ? database.getProjectAgentTargetByOutputPath(project.id, project.rootPath, toolId, outputPath) : options.binding;
     if (binding && binding.agentId !== agent.id) {
       return {
         projectId: project.id,
@@ -736,35 +791,40 @@ function projectAgentTargetState(database: AppDatabase, project: Project, agent:
         toolId,
         agent,
         binding: null,
-        outputPath: preview.targetPath,
+        outputPath,
         status: "unmanaged",
-        preview,
+        preview: null,
         reason: "同路径已由另一个 AgentHub agent 管理",
         error: null
       };
     }
     if (!binding) {
+      const hasExistingFile = fs.existsSync(outputPath);
       return {
         projectId: project.id,
         targetRootPath: project.rootPath,
         toolId,
         agent,
         binding: null,
-        outputPath: preview.targetPath,
-        status: fs.existsSync(preview.targetPath) ? "unmanaged" : "missing",
-        preview,
-        reason: fs.existsSync(preview.targetPath) ? "项目存在未接管 agent 文件" : "未启用",
+        outputPath,
+        status: hasExistingFile ? "unmanaged" : "missing",
+        preview: null,
+        reason: hasExistingFile ? "项目存在未接管 agent 文件" : "未启用",
         error: null
       };
     }
     if (!fs.existsSync(binding.outputPath)) {
-      return stateFromBinding(project, toolId, agent, binding, preview, "missing", "binding 仍存在，但项目文件已缺失");
+      return stateFromBinding(project, toolId, agent, binding, null, "missing", "binding 仍存在，但项目文件已缺失");
     }
     const currentOutputHash = hashFile(binding.outputPath);
     if (currentOutputHash !== binding.appliedOutputHash) {
-      return stateFromBinding(project, toolId, agent, binding, preview, "drifted", "项目文件和上次 AgentHub 生成内容不一致");
+      return stateFromBinding(project, toolId, agent, binding, null, "drifted", "项目文件和上次 AgentHub 生成内容不一致");
     }
-    if (agent.contentHash !== binding.appliedSourceHash || preview.outputHash !== binding.appliedOutputHash) {
+    if (agent.contentHash !== binding.appliedSourceHash) {
+      return stateFromBinding(project, toolId, agent, binding, null, "outdated", "中心 AgentHub agent 已更新");
+    }
+    const preview = conversionPreview(agent, toolId, project.rootPath, "sync");
+    if (preview.outputHash !== binding.appliedOutputHash) {
       return stateFromBinding(project, toolId, agent, binding, preview, "outdated", "中心 AgentHub agent 已更新");
     }
     return stateFromBinding(project, toolId, agent, binding, preview, "current", null);
@@ -790,7 +850,7 @@ function stateFromBinding(
   toolId: AgentHubToolId,
   agent: AgentHubAgent,
   binding: ProjectAgentTarget,
-  preview: AgentHubConversionPreview,
+  preview: AgentHubConversionPreview | null,
   status: AgentHubTargetStatus,
   reason: string | null
 ): ProjectAgentTargetState {
@@ -1011,8 +1071,8 @@ function shouldSkipBuiltInAgencyFile(relativePath: string): boolean {
   return lower.split("/").length < 2;
 }
 
-function listAgentToolTargets(database: AppDatabase, project: Project): ProjectToolTarget[] {
-  return listProjectToolTargets(database, project)
+function listAgentToolTargets(database: AppDatabase, project: Project, config?: AppConfig): ProjectToolTarget[] {
+  return listProjectToolTargets(database, project, config)
     .filter((target) => target.enabled)
     .map((target) => {
       if (!isAgentHubToolId(target.toolId)) {
@@ -1032,8 +1092,8 @@ function listAgentToolTargets(database: AppDatabase, project: Project): ProjectT
     });
 }
 
-function ensureAgentToolEnabled(database: AppDatabase, project: Project, toolId: AgentHubToolId): void {
-  const target = listAgentToolTargets(database, project).find((item) => item.toolId === toolId);
+function ensureAgentToolEnabled(database: AppDatabase, project: Project, toolId: AgentHubToolId, config?: AppConfig): void {
+  const target = listAgentToolTargets(database, project, config).find((item) => item.toolId === toolId);
   if (!target?.enabled) throw new Error("该工具未在项目中启用");
   if (!target.supported) throw new Error(target.reason ?? "尚未支持");
 }

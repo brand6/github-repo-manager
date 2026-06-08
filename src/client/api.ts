@@ -180,9 +180,10 @@ export const client = {
     apiPost<CliHubCli>(`/api/clihub/clis/${encodeURIComponent(cliId)}/channels`, { installCommand }),
   installCliHubCli: (cliId: string, channelId?: string) =>
     apiPost<CliHubCli>(`/api/clihub/clis/${encodeURIComponent(cliId)}/install`, { ...(channelId ? { channelId } : {}) }),
+  launchCliHubInstall: (cliId: string, channelId?: string) =>
+    apiPost<LaunchResponse>(`/api/clihub/clis/${encodeURIComponent(cliId)}/install-terminal`, { ...(channelId ? { channelId } : {}) }),
   checkCliHubUpdates: () => apiPost<CliHubList>("/api/clihub/updates/check"),
   checkCliHubUpdate: (cliId: string) => apiPost<CliHubList>(`/api/clihub/clis/${encodeURIComponent(cliId)}/check-updates`),
-  updateCliHubCli: (cliId: string) => apiPost<CliHubCli>(`/api/clihub/clis/${encodeURIComponent(cliId)}/update`),
   launchCliHubUpdate: (cliId: string) => apiPost<LaunchResponse>(`/api/clihub/clis/${encodeURIComponent(cliId)}/update-terminal`),
   mcphub: () => apiGet<McpHubList>("/api/mcphub"),
   importMcpHubJson: (input: string) => apiPost<McpHubImportResult>("/api/mcphub/import", { input }),

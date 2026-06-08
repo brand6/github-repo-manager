@@ -38,6 +38,10 @@ interface ProjectCliCommandDefinition {
   args: string[];
   description: string;
   argsPlaceholder?: string | null;
+  executionMode: ProjectCliActionExecutionMode;
+  writesProject: boolean;
+  requiresConfirmation: boolean;
+  affectedSubpaths?: string[];
 }
 
 export class ProjectCliActionError extends Error {
@@ -73,7 +77,7 @@ const projectCliActions: ProjectCliActionDefinition[] = [
     label: "查看状态",
     defaultCommand: "codegraph",
     args: ["status"],
-    executionMode: "inline",
+    executionMode: "terminal",
     writesProject: false,
     requiresConfirmation: false,
     affectedSubpaths: []
@@ -111,34 +115,50 @@ const projectCliCommandTemplates: Record<string, ProjectCliCommandDefinition[]> 
       label: "初始化仓库",
       args: ["init"],
       description: "在当前 Project Group 目录创建 Git 仓库。",
-      argsPlaceholder: "可选参数，例如 -b main"
+      argsPlaceholder: "可选参数，例如 -b main",
+      executionMode: "terminal",
+      writesProject: true,
+      requiresConfirmation: true,
+      affectedSubpaths: [".git"]
     },
     {
       commandId: "status",
       label: "查看状态",
       args: ["status", "--short"],
       description: "查看当前目录的未提交变更、暂存区和未跟踪文件。",
-      argsPlaceholder: "可选参数，例如 --ignored"
+      argsPlaceholder: "可选参数，例如 --ignored",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "branch-current",
       label: "查看当前分支",
       args: ["branch", "--show-current"],
-      description: "显示当前工作目录所在的 Git 分支名称。"
+      description: "显示当前工作目录所在的 Git 分支名称。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "log-recent",
       label: "查看最近提交",
       args: ["log", "--oneline", "--decorate", "-n", "20"],
       description: "用紧凑格式查看最近 20 条提交。",
-      argsPlaceholder: "可选参数，例如 --since=1.week"
+      argsPlaceholder: "可选参数，例如 --since=1.week",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "diff-stat",
       label: "查看差异摘要",
       args: ["diff", "--stat"],
       description: "查看未提交改动涉及的文件和行数摘要。",
-      argsPlaceholder: "可选参数，例如 --cached"
+      argsPlaceholder: "可选参数，例如 --cached",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     }
   ],
   gh: [
@@ -146,27 +166,39 @@ const projectCliCommandTemplates: Record<string, ProjectCliCommandDefinition[]> 
       commandId: "auth-status",
       label: "查看登录状态",
       args: ["auth", "status"],
-      description: "检查 GitHub CLI 当前账号和认证状态。"
+      description: "检查 GitHub CLI 当前账号和认证状态。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "repo-view",
       label: "查看仓库信息",
       args: ["repo", "view"],
-      description: "显示当前 GitHub 仓库的基本信息。"
+      description: "显示当前 GitHub 仓库的基本信息。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "pr-list",
       label: "查看 PR 列表",
       args: ["pr", "list"],
       description: "列出当前仓库的 Pull Request。",
-      argsPlaceholder: "可选参数，例如 --state all"
+      argsPlaceholder: "可选参数，例如 --state all",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "issue-list",
       label: "查看 Issue 列表",
       args: ["issue", "list"],
       description: "列出当前仓库的 Issue。",
-      argsPlaceholder: "可选参数，例如 --state all"
+      argsPlaceholder: "可选参数，例如 --state all",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     }
   ],
   npm: [
@@ -174,27 +206,40 @@ const projectCliCommandTemplates: Record<string, ProjectCliCommandDefinition[]> 
       commandId: "install",
       label: "安装依赖",
       args: ["install"],
-      description: "根据当前目录的 package.json 和 lockfile 安装依赖。"
+      description: "根据当前目录的 package.json 和 lockfile 安装依赖。",
+      executionMode: "terminal",
+      writesProject: true,
+      requiresConfirmation: true,
+      affectedSubpaths: ["node_modules", "package-lock.json"]
     },
     {
       commandId: "test",
       label: "运行测试",
       args: ["test"],
       description: "运行 package.json 中定义的 test 脚本。",
-      argsPlaceholder: "可选参数，例如 -- --runInBand"
+      argsPlaceholder: "可选参数，例如 -- --runInBand",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "run",
       label: "运行脚本",
       args: ["run"],
       description: "运行 package.json scripts 中的指定脚本；不填参数时列出脚本。",
-      argsPlaceholder: "脚本名或参数，例如 build"
+      argsPlaceholder: "脚本名或参数，例如 build",
+      executionMode: "terminal",
+      writesProject: true,
+      requiresConfirmation: true
     },
     {
       commandId: "outdated",
       label: "查看过期依赖",
       args: ["outdated"],
-      description: "检查当前项目可更新的 npm 依赖。"
+      description: "检查当前项目可更新的 npm 依赖。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     }
   ],
   node: [
@@ -202,14 +247,20 @@ const projectCliCommandTemplates: Record<string, ProjectCliCommandDefinition[]> 
       commandId: "version",
       label: "查看版本",
       args: ["--version"],
-      description: "显示当前 Node.js 版本。"
+      description: "显示当前 Node.js 版本。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "check",
       label: "检查脚本语法",
       args: ["--check"],
       description: "检查指定 JavaScript 文件的语法，不执行脚本。",
-      argsPlaceholder: "文件路径，例如 scripts/check.js"
+      argsPlaceholder: "文件路径，例如 scripts/check.js",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     }
   ],
   playwright: [
@@ -217,20 +268,29 @@ const projectCliCommandTemplates: Record<string, ProjectCliCommandDefinition[]> 
       commandId: "version",
       label: "查看版本",
       args: ["--version"],
-      description: "显示当前 Playwright CLI 版本。"
+      description: "显示当前 Playwright CLI 版本。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "test",
       label: "运行测试",
       args: ["test"],
       description: "在当前项目目录运行 Playwright 测试。",
-      argsPlaceholder: "可选参数，例如 tests/example.spec.ts"
+      argsPlaceholder: "可选参数，例如 tests/example.spec.ts",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "test-ui",
       label: "打开测试 UI",
       args: ["test", "--ui"],
-      description: "打开 Playwright UI 模式以交互式运行测试。"
+      description: "打开 Playwright UI 模式以交互式运行测试。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     }
   ],
   "lark-cli": [
@@ -238,13 +298,19 @@ const projectCliCommandTemplates: Record<string, ProjectCliCommandDefinition[]> 
       commandId: "help",
       label: "查看帮助",
       args: ["--help"],
-      description: "查看 lark-cli 支持的命令和参数。"
+      description: "查看 lark-cli 支持的命令和参数。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "version",
       label: "查看版本",
       args: ["--version"],
-      description: "显示当前 lark-cli 版本。"
+      description: "显示当前 lark-cli 版本。",
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     }
   ]
 };
@@ -317,6 +383,7 @@ export async function executeProjectCliAction(
     const command = launchCommand(action);
     const launch = launchInTerminal(command, {
       dryRun: Boolean(executionOptions.dryRun),
+      preferPowerShell: true,
       windowTarget: terminalWindowTarget(config.terminal.mode, {
         toolId: action.cliId,
         cwd: action.cwd,
@@ -373,6 +440,7 @@ export async function executeProjectCliCommand(
   commandId: string,
   argsText: string | null,
   config: AppConfig,
+  options: CliHubRuntimeOptions = {},
   executionOptions: { dryRun?: boolean } = {}
 ): Promise<ProjectCliActionRunResult> {
   const command = listProjectCliActions(database, project)
@@ -384,16 +452,41 @@ export async function executeProjectCliCommand(
 
   const args = [...command.args, ...parseProjectCliArgs(argsText ?? "")];
   const commandText = formatCommandLine([command.command, ...args]);
-  const launchCommand: LaunchCommand = { command: command.command, args, cwd: command.cwd };
   const startedAt = nowIso();
-  const launch = launchInTerminal(launchCommand, {
-    dryRun: Boolean(executionOptions.dryRun),
-    windowTarget: terminalWindowTarget(config.terminal.mode, {
-      toolId: command.cliId,
+  if (command.executionMode === "terminal") {
+    const launchCommand: LaunchCommand = { command: command.command, args, cwd: command.cwd };
+    const launch = launchInTerminal(launchCommand, {
+      dryRun: Boolean(executionOptions.dryRun),
+      preferPowerShell: true,
+      windowTarget: terminalWindowTarget(config.terminal.mode, {
+        toolId: command.cliId,
+        cwd: command.cwd,
+        projectRootPath: project.rootPath
+      })
+    });
+
+    return {
+      projectId: project.id,
+      targetRootPath: project.rootPath,
+      actionId: projectCliCommandActionId(command),
+      cliId: command.cliId,
+      label: command.label,
+      command: command.command,
+      args,
+      commandText,
       cwd: command.cwd,
-      projectRootPath: project.rootPath
-    })
-  });
+      executionMode: command.executionMode,
+      status: launch.launched ? "launched" : "failed",
+      startedAt,
+      completedAt: nowIso(),
+      exitCode: null,
+      stdout: "",
+      stderr: launch.reason ?? "",
+      launch
+    };
+  }
+
+  const result = await runProjectCliCommand(commandRunner(options), command.command, args, command.cwd);
 
   return {
     projectId: project.id,
@@ -405,14 +498,14 @@ export async function executeProjectCliCommand(
     args,
     commandText,
     cwd: command.cwd,
-    executionMode: "terminal",
-    status: launch.launched ? "launched" : "failed",
+    executionMode: command.executionMode,
+    status: result.exitCode === 0 ? "success" : "failed",
     startedAt,
     completedAt: nowIso(),
-    exitCode: null,
-    stdout: "",
-    stderr: launch.reason ?? "",
-    launch
+    exitCode: result.exitCode,
+    stdout: clipText(result.stdout),
+    stderr: clipText(result.stderr),
+    launch: null
   };
 }
 
@@ -465,6 +558,10 @@ function installedProjectCliCommands(database: AppDatabase, project: Project): P
           description: definition.description,
           argsPlaceholder: definition.argsPlaceholder ?? null,
           cwd: project.rootPath,
+          executionMode: definition.executionMode,
+          writesProject: definition.writesProject,
+          requiresConfirmation: definition.requiresConfirmation,
+          affectedPaths: (definition.affectedSubpaths ?? []).map((subpath) => path.join(project.rootPath, subpath)),
           localPath: cli.localPath ?? cli.resolvedPaths[0] ?? null,
           resolvedPaths: cli.resolvedPaths,
           version: cli.version
@@ -501,19 +598,39 @@ function projectCliCommandActionId(command: Pick<ProjectCliCommand, "cliId" | "c
   return `command:${command.cliId}:${command.commandId}`;
 }
 
+export function buildProjectCliProcessCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  platform: NodeJS.Platform = process.platform
+): LaunchCommand {
+  if (platform !== "win32") return { command, args, cwd };
+  return {
+    command: "powershell.exe",
+    args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", projectCliPowerShellScript(command, args)],
+    cwd
+  };
+}
+
 function projectCliCommandDefinitions(cli: CliHubCli): ProjectCliCommandDefinition[] {
   return projectCliCommandTemplates[cli.cliId] ?? [
     {
       commandId: "help",
       label: "查看帮助",
       args: ["--help"],
-      description: `查看 ${cli.displayName} 支持的命令和参数。`
+      description: `查看 ${cli.displayName} 支持的命令和参数。`,
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     },
     {
       commandId: "version",
       label: "查看版本",
       args: ["--version"],
-      description: `显示当前 ${cli.displayName} 版本。`
+      description: `显示当前 ${cli.displayName} 版本。`,
+      executionMode: "terminal",
+      writesProject: false,
+      requiresConfirmation: false
     }
   ];
 }
@@ -524,21 +641,21 @@ async function runProjectCliCommand(
   args: string[],
   cwd: string
 ): Promise<CliHubCommandResult> {
-  if (runner) return runner.run(command, args, { cwd, timeoutMs: inlineCommandTimeoutMs });
-  return runProcess(command, args, cwd);
+  const processCommand = buildProjectCliProcessCommand(command, args, cwd);
+  if (runner) return runner.run(processCommand.command, processCommand.args, { cwd: processCommand.cwd, timeoutMs: inlineCommandTimeoutMs });
+  return runProcess(processCommand);
 }
 
-function runProcess(command: string, args: string[], cwd: string): Promise<CliHubCommandResult> {
+function runProcess(command: LaunchCommand): Promise<CliHubCommandResult> {
   return new Promise((resolve) => {
     execFile(
-      command,
-      args,
+      command.command,
+      command.args,
       {
-        cwd,
+        cwd: command.cwd,
         encoding: "utf8",
         timeout: inlineCommandTimeoutMs,
-        windowsHide: true,
-        shell: process.platform === "win32"
+        windowsHide: true
       },
       (error, stdout, stderr) => {
         resolve({
@@ -549,6 +666,22 @@ function runProcess(command: string, args: string[], cwd: string): Promise<CliHu
       }
     );
   });
+}
+
+function projectCliPowerShellScript(command: string, args: string[]): string {
+  return [
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    "$OutputEncoding = [System.Text.Encoding]::UTF8",
+    `${powerShellInvoke(command, args)}; exit $LASTEXITCODE`
+  ].join("; ");
+}
+
+function powerShellInvoke(command: string, args: string[]): string {
+  return ["&", quotePowerShell(command), ...args.map(quotePowerShell)].join(" ");
+}
+
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 function childExitCode(error: unknown): number {

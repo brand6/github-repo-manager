@@ -118,6 +118,10 @@ describe("AgentHub", () => {
     const reparsed = reparseAgentHubAgent(db, planner.id);
     expect(reparsed.name).toBe("Planner renamed");
     expect(reparsed.slug).toBe("planner");
+    expect(reparsed.projection.body).toContain("New center instructions");
+    const listedPlanner = listAgentHub(db, directory, "planner", { seedDefaultSources: false }).agents.find((agent) => agent.id === reparsed.id);
+    expect(listedPlanner?.projection.body).toBe("");
+    expect(listedPlanner?.nativeMetadata).toEqual({});
 
     const projectRoot = path.join(directory, "repo");
     fs.mkdirSync(projectRoot, { recursive: true });
@@ -132,6 +136,9 @@ describe("AgentHub", () => {
       expect(fs.existsSync(applied.preview.targetPath)).toBe(true);
     }
     const projectAgentState = listProjectAgentState(db, directory, project);
+    expect(projectAgentState.agents.find((agent) => agent.id === reparsed.id)?.projection.body).toBe("");
+    expect(projectAgentState.targets.find((target) => target.agent.id === reparsed.id)?.agent.projection.body).toBe("");
+    expect(projectAgentState.targets.find((target) => target.binding?.agentId === reparsed.id)?.binding?.agent?.projection.body).toBe("");
     expect(projectAgentState.targets.filter((target) => target.binding && target.status === "current")).toHaveLength(5);
     expect(projectAgentState.toolTargets.find((target) => target.toolId === "kilo")).toMatchObject({ enabled: true, supported: false, reason: "尚未支持" });
     expect(projectAgentState.targets.find((target) => target.agent.id === reparsed.id && target.toolId === "kilo")).toMatchObject({

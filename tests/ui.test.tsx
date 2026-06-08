@@ -64,9 +64,9 @@ const clientMock = vi.hoisted(() => ({
   addCliHubInstallCommand: vi.fn(),
   addCliHubChannel: vi.fn(),
   installCliHubCli: vi.fn(),
+  launchCliHubInstall: vi.fn(),
   checkCliHubUpdates: vi.fn(),
   checkCliHubUpdate: vi.fn(),
-  updateCliHubCli: vi.fn(),
   launchCliHubUpdate: vi.fn(),
   mcphub: vi.fn(),
   importMcpHubJson: vi.fn(),
@@ -185,12 +185,23 @@ describe("HomePage", () => {
     clientMock.clihub.mockResolvedValue(cliHubListFixture());
     clientMock.refreshCliHubDiscovery.mockResolvedValue(cliHubListFixture());
     clientMock.addCliHubLocalPath.mockResolvedValue(cliHubListFixture().clis[0]);
-    clientMock.addCliHubInstallCommand.mockResolvedValue(cliHubListFixture().clis[1]);
+    clientMock.addCliHubInstallCommand.mockResolvedValue(customInstallCliFixture());
     clientMock.addCliHubChannel.mockResolvedValue(cliHubListFixture().clis[0]);
     clientMock.installCliHubCli.mockResolvedValue(cliHubListFixture().clis[0]);
+    clientMock.launchCliHubInstall.mockImplementation((cliId: string) =>
+      Promise.resolve({
+        launched: true,
+        command: {
+          command: "npm",
+          args: ["install", "-g", cliId.startsWith("custom-") ? "internal-cli" : "@openai/codex"],
+          cwd: "C:\\tmp\\local-ai-workbench"
+        },
+        host: "powershell",
+        reason: null
+      })
+    );
     clientMock.checkCliHubUpdates.mockResolvedValue(cliHubListFixture("update-available"));
     clientMock.checkCliHubUpdate.mockResolvedValue(cliHubListFixture("update-available"));
-    clientMock.updateCliHubCli.mockResolvedValue(cliHubListFixture().clis[0]);
     clientMock.launchCliHubUpdate.mockResolvedValue({
       launched: true,
       command: { command: "npm", args: ["update", "-g", "@openai/codex"], cwd: "C:\\tmp\\local-ai-workbench" },
@@ -506,9 +517,12 @@ describe("HomePage", () => {
     await screen.findByText("repo-a");
 
     const topbar = container.querySelector(".topbar") as HTMLElement;
+    const returnSlot = topbar.querySelector(".topbar-return-slot") as HTMLElement;
     const topbarLinks = [...topbar.querySelectorAll(".topbar-link")].map((button) => button.textContent?.trim());
     const stats = within(topbar).getByLabelText("项目统计");
     expect(topbarLinks).toEqual(["CliHub", "PluginHub", "SkillHub", "AgentHub", "McpHub", "HookHub"]);
+    expect(returnSlot).toBeInTheDocument();
+    expect(within(returnSlot).queryByRole("button", { name: "返回" })).not.toBeInTheDocument();
     expect(within(topbar).queryByText("项目总览")).not.toBeInTheDocument();
     expect(within(stats).getByText("项目")).toBeInTheDocument();
     expect(within(stats).getByText("2")).toBeInTheDocument();
@@ -827,6 +841,8 @@ describe("HomePage", () => {
     fireEvent.change(within(customPanel).getByLabelText("安装命令"), { target: { value: "npm install -g internal-cli" } });
     fireEvent.click(within(customPanel).getByRole("button", { name: "安装并添加 CLI" }));
     await waitFor(() => expect(clientMock.addCliHubInstallCommand).toHaveBeenCalledWith("npm install -g internal-cli", "", ""));
+    await waitFor(() => expect(clientMock.launchCliHubInstall).toHaveBeenCalledWith("custom-command-internal-123", "custom:npm:internal"));
+    await waitFor(() => expect(container.querySelector(".toast-notice")).toHaveTextContent("已打开 CLI 安装终端：npm install -g internal-cli"));
 
     fireEvent.click(within(codexRow).getByRole("button", { name: "检查更新" }));
     await waitFor(() => expect(clientMock.checkCliHubUpdate).toHaveBeenCalledWith("codex"));
@@ -836,7 +852,6 @@ describe("HomePage", () => {
 
     fireEvent.click(within(codexRow).getByRole("button", { name: "更新" }));
     await waitFor(() => expect(clientMock.launchCliHubUpdate).toHaveBeenCalledWith("codex"));
-    expect(clientMock.updateCliHubCli).not.toHaveBeenCalled();
     await waitFor(() => expect(container.querySelector(".toast-notice")).toHaveTextContent("已打开 CLI 更新终端：npm update -g @openai/codex"));
   });
 
@@ -884,7 +899,7 @@ describe("HomePage", () => {
     await waitFor(() => expect(screen.getByText("python-development")).toBeInTheDocument());
   });
 
-  it("refreshes a CliHub row after installing a CLI channel", async () => {
+  it("opens a terminal when installing a CliHub channel", async () => {
     const unavailable = cliHubListFixture();
     unavailable.clis[0] = {
       ...unavailable.clis[0],
@@ -901,9 +916,8 @@ describe("HomePage", () => {
     };
     clientMock.refreshCliHubDiscovery.mockResolvedValueOnce(unavailable).mockResolvedValueOnce(installed);
     clientMock.clihub.mockResolvedValue(unavailable);
-    clientMock.installCliHubCli.mockResolvedValue(installed.clis[0]);
 
-    render(<App />);
+    const { container } = render(<App />);
 
     await screen.findByText("还没有项目");
     fireEvent.click(screen.getByRole("button", { name: "CliHub" }));
@@ -913,31 +927,32 @@ describe("HomePage", () => {
 
     fireEvent.click(within(codexRow).getByRole("button", { name: "安装" }));
 
-    await waitFor(() => expect(clientMock.installCliHubCli).toHaveBeenCalledWith("codex", "codex:npm"));
-    await waitFor(() => expect(clientMock.refreshCliHubDiscovery).toHaveBeenCalledWith("codex"));
-    await waitFor(() => expect(codexSummary).toHaveTextContent("codex 2.0.0"));
-    expect(codexSummary).not.toHaveTextContent("不可用");
+    await waitFor(() => expect(clientMock.launchCliHubInstall).toHaveBeenCalledWith("codex", "codex:npm"));
+    expect(clientMock.installCliHubCli).not.toHaveBeenCalled();
+    await waitFor(() => expect(container.querySelector(".toast-notice")).toHaveTextContent("已打开 CLI 安装终端：npm install -g @openai/codex"));
   });
 
   it("shows CliHub running operations only in the global toast", async () => {
-    clientMock.refreshCliHubDiscovery.mockResolvedValue({
-      ...cliHubListFixture(),
-      operation: {
-        kind: "update-check",
-        cliId: "claude",
-        cliDisplayName: "Claude Code",
-        startedAt: "2026-06-01T00:00:00Z"
-      }
-    });
+    let resolveCheck: ((value: CliHubList) => void) | null = null;
+    clientMock.checkCliHubUpdates.mockReturnValue(
+      new Promise<CliHubList>((resolve) => {
+        resolveCheck = resolve;
+      })
+    );
 
     const { container } = render(<App />);
 
     await screen.findByText("还没有项目");
     fireEvent.click(screen.getByRole("button", { name: "CliHub" }));
+    await screen.findByRole("heading", { name: "CliHub" });
+    fireEvent.click(screen.getByRole("button", { name: "检查全部更新" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("CliHub 正在检查更新：Claude Code");
-    expect(container.querySelector(".toast-notice")).toHaveTextContent("CliHub 正在检查更新：Claude Code");
+    expect(await screen.findByRole("status")).toHaveTextContent("CliHub 正在检查全部更新");
+    expect(container.querySelector(".toast-notice")).toHaveTextContent("CliHub 正在检查全部更新");
     expect(container.querySelector(".clihub-page .notice.inline")).not.toBeInTheDocument();
+    await act(async () => {
+      resolveCheck?.(cliHubListFixture());
+    });
   });
 
   it("reloads CliHub rows when a terminal update completion event arrives", async () => {
@@ -1735,6 +1750,103 @@ describe("HomePage", () => {
     expect(within(panel).queryByRole("checkbox", { name: "qwen" })).not.toBeInTheDocument();
   });
 
+  it("updates one SkillHub skill row after a checkbox change without full panel reloads", async () => {
+    const project = projectFixture("E:\\old");
+    const source = skillHubSourceFixture("source-1", "local-source", "local");
+    const skill = skillHubSkillFixture(source, "skill-1", "review", "Review code");
+    const toolTargets = [projectToolTargetFixture(project, "codex", true), projectToolTargetFixture(project, "opencode", true)];
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectToolTargets.mockResolvedValue(toolTargets);
+    clientMock.projectLocalSkills.mockResolvedValueOnce({
+      projectId: project.id,
+      toolTargets,
+      migrationSources: [source],
+      skills: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          type: "skillhub",
+          folderName: "review",
+          skillName: "review",
+          description: "Review code",
+          skillPath: `${project.rootPath}\\.codex\\skills\\review`,
+          skillHubSkill: skill,
+          pluginBinding: null,
+          plugin: null,
+          migratable: false,
+          reason: null
+        }
+      ]
+    });
+    clientMock.projectSkillTargets.mockResolvedValueOnce({
+      projectId: project.id,
+      toolTargets,
+      skillTargets: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          skillId: skill.id,
+          linkPath: `${project.rootPath}\\.codex\\skills\\review`,
+          targetPath: skill.libraryPath,
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ],
+      skills: [skill]
+    });
+    clientMock.updateProjectSkillTargets.mockResolvedValue({
+      projectId: project.id,
+      skillId: skill.id,
+      targets: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          skillId: skill.id,
+          linkPath: `${project.rootPath}\\.codex\\skills\\review`,
+          targetPath: skill.libraryPath,
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        },
+        {
+          projectId: project.id,
+          toolId: "opencode",
+          skillId: skill.id,
+          linkPath: `${project.rootPath}\\.opencode\\skills\\review`,
+          targetPath: skill.libraryPath,
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ],
+      removed: [],
+      conflicts: [],
+      failures: [],
+      requiresConfirmation: false
+    });
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    fireEvent.click(within(panel).getByRole("tab", { name: "SkillHub技能" }));
+    const sourceDetails = await within(panel).findByText("local-source");
+    fireEvent.click(sourceDetails.closest("summary") as HTMLElement);
+    fireEvent.click(within(panel).getByText("review").closest("summary") as HTMLElement);
+
+    const opencodeCheckbox = within(panel).getByRole("checkbox", { name: "opencode" });
+    expect(opencodeCheckbox).not.toBeChecked();
+    fireEvent.click(opencodeCheckbox);
+
+    await waitFor(() => expect(clientMock.updateProjectSkillTargets).toHaveBeenCalledWith(project.id, skill.id, ["codex", "opencode"], false, project.rootPath));
+    expect(opencodeCheckbox).toBeChecked();
+    expect(clientMock.projectSkillTargets).toHaveBeenCalledTimes(1);
+    expect(clientMock.projectLocalSkills).toHaveBeenCalledTimes(1);
+  });
+
   it("opens the project local skill panel and lets a local skill use an existing SkillHub link", async () => {
     const project = projectFixture("E:\\old");
     const source = skillHubSourceFixture("source-1", "skills", "local");
@@ -1870,12 +1982,22 @@ describe("HomePage", () => {
     clientMock.projects.mockResolvedValue([project]);
     clientMock.detail.mockResolvedValue(detailFixture(project));
     clientMock.projectToolTargets.mockResolvedValue([projectToolTargetFixture(project, "codex", true)]);
-    clientMock.projectLocalSkills.mockResolvedValueOnce(initialLocalSkills).mockResolvedValueOnce({ ...initialLocalSkills, skills: [] });
+    clientMock.projectLocalSkills.mockResolvedValueOnce(initialLocalSkills);
     clientMock.updateProjectSkillTargets.mockResolvedValue({
       projectId: project.id,
       skillId: skill.id,
       targets: [],
-      removed: [],
+      removed: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          skillId: skill.id,
+          linkPath: `${project.rootPath}\\.codex\\skills\\triage`,
+          targetPath: skill.libraryPath,
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ],
       conflicts: [],
       failures: [],
       requiresConfirmation: false
@@ -1898,6 +2020,7 @@ describe("HomePage", () => {
     await waitFor(() => expect(clientMock.updateProjectSkillTargets).toHaveBeenCalledWith(project.id, skill.id, [], false, project.rootPath));
     expect(await within(panel).findByText("没有发现项目技能")).toBeInTheDocument();
     expect(clientMock.projectSkillTargets).not.toHaveBeenCalled();
+    expect(clientMock.projectLocalSkills).toHaveBeenCalledTimes(1);
   });
 
   it("opens the project Plugin panel and installs a complete plugin", async () => {
@@ -2192,8 +2315,8 @@ describe("HomePage", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "查看状态" }));
 
     await waitFor(() => expect(clientMock.executeProjectCliAction).toHaveBeenCalledWith(project.id, "codegraph:status", childRoot, false));
-    expect(await within(panel).findByText("Index is ready")).toBeInTheDocument();
-    expect(await screen.findByText("项目 CLI 动作完成：查看状态")).toBeInTheDocument();
+    expect(await within(panel).findByText("已打开可见终端")).toBeInTheDocument();
+    expect(await screen.findByText("已打开终端：codegraph status")).toBeInTheDocument();
   });
 
   it("expands installed function and dependency CLI commands with args input and execute buttons", async () => {
@@ -2210,6 +2333,7 @@ describe("HomePage", () => {
         command: "git",
         args: ["status", "--short", "--ignored"],
         commandText: "git status --short --ignored",
+        executionMode: "terminal",
         status: "launched",
         stdout: ""
       })
@@ -2240,6 +2364,10 @@ describe("HomePage", () => {
               description: "在当前 Project Group 目录创建 Git 仓库。",
               argsPlaceholder: "可选参数，例如 -b main",
               cwd: childRoot,
+              executionMode: "terminal",
+              writesProject: true,
+              requiresConfirmation: true,
+              affectedPaths: [`${childRoot}\\.git`],
               localPath: gitPath,
               resolvedPaths: [gitPath],
               version: "git version 2.51.0.windows.1"
@@ -2256,6 +2384,10 @@ describe("HomePage", () => {
               description: "查看当前目录的未提交变更、暂存区和未跟踪文件。",
               argsPlaceholder: "可选参数，例如 --ignored",
               cwd: childRoot,
+              executionMode: "terminal",
+              writesProject: false,
+              requiresConfirmation: false,
+              affectedPaths: [],
               localPath: gitPath,
               resolvedPaths: [gitPath],
               version: "git version 2.51.0.windows.1"
@@ -2284,6 +2416,7 @@ describe("HomePage", () => {
     expect(within(panel).getByText("查看当前目录的未提交变更、暂存区和未跟踪文件。")).toBeInTheDocument();
     expect(within(panel).getByText("git init")).toBeInTheDocument();
     expect(within(panel).getByText("git status --short")).toBeInTheDocument();
+    expect(within(panel).getByText(`${childRoot}\\.git`)).toBeInTheDocument();
     expect(within(panel).getAllByText("git").length).toBeGreaterThan(0);
     expect(within(panel).queryByText(gitPath)).not.toBeInTheDocument();
     fireEvent.change(within(panel).getByLabelText("查看状态 附加参数"), { target: { value: "--ignored" } });
@@ -2291,8 +2424,19 @@ describe("HomePage", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "执行 查看状态" }));
 
     await waitFor(() => expect(clientMock.executeProjectCliCommand).toHaveBeenCalledWith(project.id, "git", "status", "--ignored", childRoot, false));
-    expect(confirm).toHaveBeenCalledWith(`确认执行项目 CLI 命令？\ncwd：${childRoot}\ncommand：git status --short --ignored`);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await within(panel).findByText("已打开可见终端")).toBeInTheDocument();
     expect(await screen.findByText("已打开终端：git status --short --ignored")).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole("button", { name: "执行 初始化仓库" }));
+    const dialog = await screen.findByRole("dialog", { name: "确认执行项目 CLI 命令" });
+    expect(within(dialog).getByText(childRoot)).toBeInTheDocument();
+    expect(within(dialog).getByText("git init")).toBeInTheDocument();
+    expect(within(dialog).getByText(`${childRoot}\\.git`)).toBeInTheDocument();
+    expect(clientMock.executeProjectCliCommand).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "执行" }));
+    await waitFor(() => expect(clientMock.executeProjectCliCommand).toHaveBeenCalledWith(project.id, "git", "init", "", childRoot, false));
+    confirm.mockRestore();
   });
 
   it("opens project Agent panel for a child group and handles apply conflicts and local migration", async () => {
@@ -2778,10 +2922,14 @@ describe("HomePage", () => {
     await screen.findByText("当前项目根目录");
 
     const topbar = container.querySelector(".topbar") as HTMLElement;
+    const brandGroup = topbar.querySelector(".topbar-brand-group") as HTMLElement;
+    const returnSlot = topbar.querySelector(".topbar-return-slot") as HTMLElement;
+    expect(brandGroup.firstElementChild).toHaveTextContent("AI项目管理");
+    expect(brandGroup.children[1]).toBe(returnSlot);
     expect(within(topbar).getByRole("heading", { name: "new-ai-game" })).toBeInTheDocument();
     expect(within(topbar).queryByText("项目详情")).not.toBeInTheDocument();
     expect(within(topbar).queryByText("E:\\new-ai-game")).not.toBeInTheDocument();
-    expect(within(topbar).getByRole("button", { name: "返回" })).toBeInTheDocument();
+    expect(within(returnSlot).getByRole("button", { name: "返回" })).toBeInTheDocument();
     expect(within(topbar).getByRole("checkbox", { name: "子目录" })).toBeInTheDocument();
     expect(within(topbar).getByRole("button", { name: "刷新项目" })).toBeInTheDocument();
     expect(within(topbar).getByRole("button", { name: "设置" })).toBeInTheDocument();
@@ -3098,6 +3246,27 @@ describe("HomePage", () => {
     });
     expect(await screen.findByText("开罗小游戏，主题是骑士对决")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("会话详情加载中...")).not.toBeInTheDocument());
+  });
+
+  it("debounces project detail filter updates without clearing current sessions", async () => {
+    const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailWithSession(project));
+
+    render(<App />);
+
+    await screen.findByText("new-ai-game");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    expect(await screen.findByText("开罗小游戏，主题是骑士对决")).toBeInTheDocument();
+
+    const detailCallsBeforeTyping = clientMock.detail.mock.calls.length;
+    fireEvent.change(screen.getByLabelText("筛选标题和摘要"), { target: { value: "骑士" } });
+
+    expect(screen.getByText("开罗小游戏，主题是骑士对决")).toBeInTheDocument();
+    expect(screen.getByText("筛选更新中...")).toBeInTheDocument();
+    expect(clientMock.detail).toHaveBeenCalledTimes(detailCallsBeforeTyping);
+
+    await waitFor(() => expect(clientMock.detail).toHaveBeenLastCalledWith(project.id, "骑士"));
   });
 
   it("deletes a session from project detail after confirmation and refreshes detail", async () => {
@@ -3495,6 +3664,40 @@ function cliHubListFixture(updateStatus: CliHubList["clis"][number]["updateStatu
   };
 }
 
+function customInstallCliFixture(): CliHubList["clis"][number] {
+  return {
+    ...cliHubListFixture().clis[0],
+    cliId: "custom-command-internal-123",
+    displayName: "internal-cli",
+    kind: "custom",
+    sourceType: "custom",
+    sourceState: "install-command",
+    commandNames: ["internal"],
+    channels: [
+      {
+        channelId: "custom:npm:internal",
+        provider: "npm",
+        label: "npm: internal-cli",
+        packageId: "internal-cli",
+        installCommand: ["npm", "install", "-g", "internal-cli"],
+        updateCommand: null,
+        checkCommand: null,
+        appManaged: false,
+        metadata: {},
+        builtin: false
+      }
+    ],
+    availabilityState: "unavailable",
+    resolvedPaths: [],
+    version: null,
+    versionState: "unknown",
+    discoveredAt: null,
+    currentProvider: null,
+    updateStatus: "unknown",
+    updateCheckedAt: null
+  };
+}
+
 function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boolean, overrides: Partial<ProjectToolTarget> = {}): ProjectToolTarget {
   return {
     projectId: project.id,
@@ -3558,7 +3761,7 @@ function projectCliStateFixture(
             commandText: "codegraph status",
             cwd: targetRootPath,
             cwdPolicy: "target-root",
-            executionMode: "inline",
+            executionMode: "terminal",
             writesProject: false,
             requiresConfirmation: false,
             affectedPaths: [],
@@ -3617,12 +3820,12 @@ function projectCliRunResultFixture(
     args: ["status"],
     commandText: "codegraph status",
     cwd: targetRootPath,
-    executionMode: "inline",
-    status: "success",
+    executionMode: "terminal",
+    status: "launched",
     startedAt: "2026-06-01T00:00:00Z",
     completedAt: "2026-06-01T00:00:01Z",
-    exitCode: 0,
-    stdout: "Index is ready",
+    exitCode: null,
+    stdout: "",
     stderr: "",
     launch: null
   };

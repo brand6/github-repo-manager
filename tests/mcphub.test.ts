@@ -113,6 +113,7 @@ describe("McpHub", () => {
       mcp: { docs: { type: "local", command: ["node", `${projectRoot}\\server.js`], environment: { DOCS_TOKEN: "${DOCS_TOKEN}" } } }
     });
     expect(db.listProjectMcpBindings(project.id, project.rootPath)).toHaveLength(3);
+    expect(db.listProjectMcpBindings(project.id, project.rootPath).every((binding) => binding.appliedFingerprint.length > 0)).toBe(true);
 
     const disabled = disableProjectMcpServer(db, project, "codex", "docs");
     expect(disabled).toMatchObject({ removedBinding: true, modified: true });
@@ -298,6 +299,67 @@ describe("McpHub", () => {
     expect(disabled).toMatchObject({ removedBinding: false, modified: false });
     expect(deleted.modifiedFiles).toEqual([]);
     expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8")).mcpServers.docs).toMatchObject({ command: "node" });
+    db.close();
+  });
+
+  it("refuses to overwrite unmanaged same-id MCP entries", () => {
+    directory = testDir("mcphub-unmanaged-apply-preserve");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".mcp.json"), JSON.stringify({ mcpServers: { docs: { command: "local-node" } } }, null, 2), "utf8");
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude"]);
+    db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: null,
+      transport: "stdio",
+      command: "node",
+      args: [],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+
+    expect(() => applyProjectMcpServer(db, project, "claude", "docs")).toThrow("同名 MCP entry 已存在且不属于 McpHub");
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8")).mcpServers.docs).toMatchObject({ command: "local-node" });
+    expect(db.getProjectMcpBinding(project.id, project.rootPath, "claude", "docs")).toBeNull();
+    db.close();
+  });
+
+  it("preserves drifted managed MCP entries when disabling or deleting", () => {
+    directory = testDir("mcphub-drift-preserve");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude"]);
+    db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: null,
+      transport: "stdio",
+      command: "node",
+      args: ["server.js"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+
+    applyProjectMcpServer(db, project, "claude", "docs");
+    fs.writeFileSync(path.join(projectRoot, ".mcp.json"), JSON.stringify({ mcpServers: { docs: { command: "edited-node" } } }, null, 2), "utf8");
+
+    expect(() => disableProjectMcpServer(db, project, "claude", "docs")).toThrow("目标 MCP entry 已被本地修改");
+    const deleted = deleteMcpHubServer(db, "docs");
+
+    expect(deleted.deleted).toBe(false);
+    expect(deleted.failures).toEqual([expect.objectContaining({ reason: "目标 MCP entry 已被本地修改，未覆盖或删除" })]);
+    expect(db.getMcpHubServer("docs")).not.toBeNull();
+    expect(db.getProjectMcpBinding(project.id, project.rootPath, "claude", "docs")).not.toBeNull();
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8")).mcpServers.docs).toMatchObject({ command: "edited-node" });
     db.close();
   });
 });

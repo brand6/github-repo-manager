@@ -233,6 +233,10 @@ export interface ProjectCliCommand {
   description: string;
   argsPlaceholder: string | null;
   cwd: string;
+  executionMode: ProjectCliActionExecutionMode;
+  writesProject: boolean;
+  requiresConfirmation: boolean;
+  affectedPaths: string[];
   localPath: string | null;
   resolvedPaths: string[];
   version: string | null;
@@ -898,6 +902,7 @@ export interface ProjectMcpBinding {
   toolId: McpHubTargetToolId;
   serverId: string;
   appliedServerId: string;
+  appliedFingerprint: string;
   appliedAt: string;
   createdAt: string;
   updatedAt: string;

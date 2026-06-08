@@ -206,11 +206,12 @@ label,
 }
 
 .topbar {
+  --topbar-return-slot-width: 64px;
   position: sticky;
   top: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
   align-items: center;
   justify-content: flex-start;
   gap: 16px;
@@ -228,6 +229,44 @@ label,
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.topbar-brand-group,
+.topbar-hub-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.topbar-brand-group {
+  flex: 0 0 auto;
+}
+
+.topbar-hub-links {
+  flex: 0 1 auto;
+}
+
+.topbar-return-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--topbar-return-slot-width);
+  width: var(--topbar-return-slot-width);
+}
+
+.topbar-return-button {
+  width: 100%;
+  padding-inline: 0;
+}
+
+.topbar-return-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 40px;
+  visibility: hidden;
 }
 
 .topbar-context {
@@ -1558,6 +1597,13 @@ label,
   width: 100%;
 }
 
+.detail-filter-status {
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .detail-relocation {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1866,6 +1912,8 @@ label,
 }
 
 .session-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
@@ -2401,6 +2449,23 @@ dd {
 .project-cli-action-title .metric-pill {
   max-width: 100%;
   white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.project-cli-confirm-dialog {
+  width: min(680px, 100%);
+}
+
+.project-cli-confirm-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-cli-confirm-summary strong {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -2942,6 +3007,10 @@ dd {
     flex-wrap: wrap;
   }
 
+  .topbar-hub-links {
+    flex-wrap: wrap;
+  }
+
   .topbar-context {
     grid-column: 1;
     min-width: 0;
@@ -3050,12 +3119,24 @@ dd {
 
   .topbar-nav {
     display: grid;
+    gap: 8px;
+  }
+
+  .topbar-brand-group {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--topbar-return-slot-width);
+    gap: 8px;
+  }
+
+  .topbar-hub-links {
+    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
   }
 
   .brand,
-  .topbar-link {
+  .topbar-link,
+  .topbar-return-button {
     justify-content: center;
     width: 100%;
   }

@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { commandAvailable } from "../core/commandAvailability.js";
 import type { LaunchCommand, LaunchResponse, TerminalMode } from "../../shared/types.js";
 
 interface TerminalHostOptions {
   platform?: NodeJS.Platform;
   windowsTerminalAvailable?: boolean;
   windowTarget?: string | null;
+  preferPowerShell?: boolean;
 }
 
 export function validateLaunchCommand(command: LaunchCommand): string | null {
@@ -15,7 +17,7 @@ export function validateLaunchCommand(command: LaunchCommand): string | null {
   return null;
 }
 
-export function launchInTerminal(command: LaunchCommand, options: { dryRun?: boolean; windowTarget?: string | null } = {}): LaunchResponse {
+export function launchInTerminal(command: LaunchCommand, options: { dryRun?: boolean; windowTarget?: string | null; preferPowerShell?: boolean } = {}): LaunchResponse {
   const reason = validateLaunchCommand(command);
   if (reason) {
     return { launched: false, command, host: "direct", reason };
@@ -23,6 +25,7 @@ export function launchInTerminal(command: LaunchCommand, options: { dryRun?: boo
 
   const hostOptions: TerminalHostOptions = {};
   if (options.windowTarget !== undefined) hostOptions.windowTarget = options.windowTarget;
+  if (options.preferPowerShell !== undefined) hostOptions.preferPowerShell = options.preferPowerShell;
   const host = buildTerminalHost(command, hostOptions);
   if (!options.dryRun) {
     const child = spawn(host.executable, host.args, {
@@ -42,7 +45,7 @@ export function buildTerminalHost(command: LaunchCommand, options: TerminalHostO
   if (platform === "win32") {
     const powershellArgs = powerShellHostArgs(command);
     const windowsTerminalAvailable = options.windowsTerminalAvailable ?? isExecutableAvailable("wt.exe", platform);
-    if (windowsTerminalAvailable) {
+    if (!options.preferPowerShell && windowsTerminalAvailable) {
       const windowTarget = options.windowTarget?.trim() || "new";
       return {
         kind: "windows-terminal",
@@ -73,10 +76,7 @@ export function terminalWindowTarget(
 }
 
 export function isExecutableAvailable(command: string, platform: NodeJS.Platform = process.platform): boolean {
-  const lookup = platform === "win32" ? "where.exe" : "command";
-  const args = platform === "win32" ? [command] : ["-v", command];
-  const result = spawnSync(lookup, args, { stdio: "ignore", shell: platform !== "win32" });
-  return result.status === 0;
+  return commandAvailable(command, platform);
 }
 
 function powerShellHostArgs(command: LaunchCommand): string[] {

@@ -44,6 +44,7 @@ import type {
   ProjectPluginApplyResult,
   ProjectPluginState,
   ProjectRepairCandidate,
+  ProjectSkillTarget,
   ProjectSkillTargetsState,
   ProjectSkillUpdateResult,
   ProjectToolTarget,
@@ -88,8 +89,19 @@ interface RepairSignal {
   message: string;
 }
 
+interface ProjectCliConfirmationState {
+  title: string;
+  label: string;
+  cwd: string;
+  commandText: string;
+  affectedPaths: string[];
+  writesProject: boolean;
+  onConfirm: () => Promise<void>;
+}
+
 type AppView = "home" | "skillhub" | "mcphub" | "hookhub" | "clihub" | "pluginhub" | "agenthub";
 type HubLoadKey = Exclude<AppView, "home">;
+const DETAIL_QUERY_DEBOUNCE_MS = 250;
 
 interface HubLoadOptions<T> {
   key: HubLoadKey;
@@ -106,12 +118,98 @@ function projectPanelTargetKey(projectId: string, targetRootPath?: string | null
   return `${projectId}::${targetRootPath ?? ""}`;
 }
 
+function mergeProjectSkillTargets(
+  currentTargets: ProjectSkillTarget[],
+  result: ProjectSkillUpdateResult
+): ProjectSkillTarget[] {
+  const authoritative = !result.requiresConfirmation && result.failures.length === 0;
+  const removedKeys = new Set(result.removed.map(projectSkillTargetKey));
+  const targetKeys = new Set(result.targets.map(projectSkillTargetKey));
+  return [
+    ...currentTargets.filter((target) => {
+      const key = projectSkillTargetKey(target);
+      if (targetKeys.has(key)) return false;
+      if (removedKeys.has(key)) return false;
+      if (authoritative && target.skillId === result.skillId) return false;
+      return true;
+    }),
+    ...result.targets
+  ].sort(compareProjectSkillTargets);
+}
+
+function mergeProjectLocalSkills(
+  currentSkills: ProjectLocalSkillsState["skills"],
+  result: ProjectSkillUpdateResult,
+  skill: SkillHubList["skills"][number] | null
+): ProjectLocalSkillsState["skills"] {
+  const authoritative = !result.requiresConfirmation && result.failures.length === 0;
+  const removedKeys = new Set(result.removed.map((target) => projectSkillLocalRowKey(target.toolId, target.linkPath)));
+  const targetKeys = new Set(result.targets.map((target) => projectSkillLocalRowKey(target.toolId, target.linkPath)));
+  const nextSkills = currentSkills.filter((current) => {
+    if (current.type !== "skillhub" || current.skillHubSkill?.id !== result.skillId) return true;
+    const key = projectSkillLocalRowKey(current.toolId, current.skillPath);
+    if (targetKeys.has(key)) return false;
+    if (removedKeys.has(key)) return false;
+    if (authoritative) return false;
+    return true;
+  });
+
+  if (skill) {
+    for (const target of result.targets) {
+      nextSkills.push({
+        projectId: target.projectId,
+        toolId: target.toolId,
+        type: "skillhub",
+        folderName: baseNameFromPath(target.linkPath) || skill.folderName,
+        skillName: skill.skillName,
+        description: skill.description,
+        skillPath: target.linkPath,
+        skillHubSkill: skill,
+        pluginBinding: null,
+        plugin: null,
+        migratable: false,
+        reason: null
+      });
+    }
+  }
+
+  return nextSkills.sort(
+    (left, right) =>
+      left.type.localeCompare(right.type) ||
+      left.toolId.localeCompare(right.toolId) ||
+      left.folderName.localeCompare(right.folderName) ||
+      left.skillPath.localeCompare(right.skillPath)
+  );
+}
+
+function projectSkillTargetKey(target: Pick<ProjectSkillTarget, "toolId" | "skillId" | "linkPath">): string {
+  return `${target.toolId}:${target.skillId}:${normalizeClientPath(target.linkPath)}`;
+}
+
+function projectSkillLocalRowKey(toolId: ToolId, skillPath: string): string {
+  return `${toolId}:${normalizeClientPath(skillPath)}`;
+}
+
+function compareProjectSkillTargets(left: ProjectSkillTarget, right: ProjectSkillTarget): number {
+  return left.toolId.localeCompare(right.toolId) || left.linkPath.localeCompare(right.linkPath) || left.skillId.localeCompare(right.skillId);
+}
+
+function normalizeClientPath(value: string): string {
+  return value.replaceAll("\\", "/").toLowerCase();
+}
+
+function baseNameFromPath(value: string): string {
+  const normalized = value.replaceAll("\\", "/");
+  return normalized.split("/").filter(Boolean).at(-1) ?? "";
+}
+
 function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapState | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [tools, setTools] = useState<ToolStatus[]>([]);
   const [warnings, setWarnings] = useState<ParserWarning[]>([]);
   const [repairCandidates, setRepairCandidates] = useState<ProjectRepairCandidate[]>([]);
@@ -120,6 +218,7 @@ function App() {
   const [projectCliState, setProjectCliState] = useState<ProjectCliActionState | null>(null);
   const [projectCliTargetRoot, setProjectCliTargetRoot] = useState<string | null>(null);
   const [lastProjectCliResult, setLastProjectCliResult] = useState<ProjectCliActionRunResult | null>(null);
+  const [projectCliConfirmation, setProjectCliConfirmation] = useState<ProjectCliConfirmationState | null>(null);
   const [drives, setDrives] = useState<ScanDrive[]>([]);
   const [scanResult, setScanResult] = useState<ScanResultState | null>(null);
   const [query, setQuery] = useState("");
@@ -177,6 +276,7 @@ function App() {
   const [ruleCreatePreview, setRuleCreatePreview] = useState<RuleCreatePreview | null>(null);
   const [ruleCreateContent, setRuleCreateContent] = useState("");
   const [ruleCreateLoading, setRuleCreateLoading] = useState(false);
+  const detailScopeProjectIdRef = useRef<string | null>(null);
   const selectedProjectIdRef = useRef<string | null>(null);
   const viewRef = useRef(view);
   const projectDetailLoadSeqRef = useRef(0);
@@ -248,11 +348,18 @@ function App() {
   }, [bootstrap?.initialized]);
 
   useEffect(() => {
-    if (!selectedProjectId) return;
-    setDetail(null);
-    setWarnings([]);
-    setRepairCandidates([]);
-    setProjectToolTargets([]);
+    if (!selectedProjectId) {
+      detailScopeProjectIdRef.current = null;
+      return;
+    }
+    const projectChanged = detailScopeProjectIdRef.current !== selectedProjectId;
+    detailScopeProjectIdRef.current = selectedProjectId;
+    if (projectChanged) {
+      setDetail(null);
+      setWarnings([]);
+      setRepairCandidates([]);
+      setProjectToolTargets([]);
+    }
     void loadDetail(selectedProjectId, query);
   }, [selectedProjectId, query]);
 
@@ -408,24 +515,29 @@ function App() {
   async function loadDetail(projectId: string, search: string) {
     const requestId = ++projectDetailLoadSeqRef.current;
     const isLatest = () => requestId === projectDetailLoadSeqRef.current && selectedProjectIdRef.current === projectId;
-    const [projectSummary, warningList, toolTargets] = await Promise.all([
-      client.detailSummary(projectId, search),
-      client.warnings(projectId),
-      client.projectToolTargets(projectId)
-    ]);
-    if (!isLatest()) return;
-    setDetail(projectSummary);
-    setWarnings(warningList);
-    setProjectToolTargets(toolTargets);
-    setRepairCandidates([]);
+    setDetailLoading(true);
+    try {
+      const [projectSummary, warningList, toolTargets] = await Promise.all([
+        client.detailSummary(projectId, search),
+        client.warnings(projectId),
+        client.projectToolTargets(projectId)
+      ]);
+      if (!isLatest()) return;
+      setDetail(projectSummary);
+      setWarnings(warningList);
+      setProjectToolTargets(toolTargets);
+      setRepairCandidates([]);
 
-    const [projectDetail, repairList] = await Promise.all([
-      client.detail(projectId, search),
-      client.repairCandidates(projectId).catch(() => [])
-    ]);
-    if (!isLatest()) return;
-    setDetail(projectDetail);
-    setRepairCandidates(repairList);
+      const [projectDetail, repairList] = await Promise.all([
+        client.detail(projectId, search),
+        client.repairCandidates(projectId).catch(() => [])
+      ]);
+      if (!isLatest()) return;
+      setDetail(projectDetail);
+      setRepairCandidates(repairList);
+    } finally {
+      if (isLatest()) setDetailLoading(false);
+    }
   }
 
   async function loadRuleSyncStatus(projectId: string): Promise<boolean> {
@@ -505,7 +617,9 @@ function App() {
   }
 
   function clearProjectViewState() {
+    projectDetailLoadSeqRef.current += 1;
     setDetail(null);
+    setDetailLoading(false);
     setWarnings([]);
     setRepairCandidates([]);
     setProjectToolTargets([]);
@@ -609,6 +723,7 @@ function App() {
   const showingHookHub = view === "hookhub" && !selectedProject;
   const showingPluginHub = view === "pluginhub" && !selectedProject;
   const showingHub = showingSkillHub || showingAgentHub || showingCliHub || showingMcpHub || showingHookHub || showingPluginHub;
+  const canReturnFromTopbar = Boolean(selectedProject || showingHub);
   const cliHubOperationStatus = showingCliHub && cliHub?.operation ? cliHubOperationMessage(cliHub.operation) : "";
   const transientStatus = scanStatus || cliHubStatus || cliHubOperationStatus || pluginHubStatus;
   const homeCommandBar = selectedProject || showingHub ? null : (
@@ -659,41 +774,53 @@ function App() {
     <main className="app">
       <header className={`topbar${selectedProject ? " topbar-project-mode" : showingHub ? " topbar-hub-mode" : " topbar-home-mode"}`}>
         <div className="topbar-nav" aria-label="主导航">
-          <button
-            className="brand"
-            type="button"
-            onClick={returnHome}
-          >
-            <span className="brand-mark" aria-hidden="true">
-              AI
-            </span>
-            <span>AI项目管理</span>
-          </button>
-          <button className={`topbar-link${view === "clihub" ? " active" : ""}`} type="button" onClick={openCliHub}>
-            CliHub
-          </button>
-          <button className={`topbar-link${view === "pluginhub" ? " active" : ""}`} type="button" onClick={openPluginHub}>
-            PluginHub
-          </button>
-          <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
-            SkillHub
-          </button>
-          <button className={`topbar-link${view === "agenthub" ? " active" : ""}`} type="button" onClick={openAgentHub}>
-            AgentHub
-          </button>
-          <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
-            McpHub
-          </button>
-          <button className={`topbar-link${view === "hookhub" ? " active" : ""}`} type="button" onClick={openHookHub}>
-            HookHub
-          </button>
+          <div className="topbar-brand-group">
+            <button
+              className="brand"
+              type="button"
+              onClick={returnHome}
+            >
+              <span className="brand-mark" aria-hidden="true">
+                AI
+              </span>
+              <span>AI项目管理</span>
+            </button>
+            <div className={`topbar-return-slot${canReturnFromTopbar ? "" : " empty"}`}>
+              {canReturnFromTopbar ? (
+                <button className="secondary topbar-return-button" type="button" onClick={returnHome}>
+                  返回
+                </button>
+              ) : (
+                <span className="topbar-return-placeholder" aria-hidden="true">
+                  返回
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="topbar-hub-links">
+            <button className={`topbar-link${view === "clihub" ? " active" : ""}`} type="button" onClick={openCliHub}>
+              CliHub
+            </button>
+            <button className={`topbar-link${view === "pluginhub" ? " active" : ""}`} type="button" onClick={openPluginHub}>
+              PluginHub
+            </button>
+            <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
+              SkillHub
+            </button>
+            <button className={`topbar-link${view === "agenthub" ? " active" : ""}`} type="button" onClick={openAgentHub}>
+              AgentHub
+            </button>
+            <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
+              McpHub
+            </button>
+            <button className={`topbar-link${view === "hookhub" ? " active" : ""}`} type="button" onClick={openHookHub}>
+              HookHub
+            </button>
+          </div>
         </div>
         <div className="topbar-context">
           {selectedProject ? (
             <div className="topbar-project-context">
-              <button className="secondary" type="button" onClick={returnHome}>
-                返回
-              </button>
               <div className="topbar-project-title">
                 <h1>{lastSegment(selectedProject.rootPath)}</h1>
                 <label className="toggle project-subdirectory-toggle">
@@ -708,9 +835,6 @@ function App() {
             </div>
           ) : showingHub ? (
             <div className="topbar-project-context">
-              <button className="secondary" type="button" onClick={returnHome}>
-                返回
-              </button>
               <div className="topbar-project-title">
                 <h1>
                   {showingSkillHub
@@ -819,6 +943,19 @@ function App() {
         />
       ) : null}
 
+      {projectCliConfirmation ? (
+        <ProjectCliConfirmDialog
+          confirmation={projectCliConfirmation}
+          busy={busy}
+          onCancel={() => setProjectCliConfirmation(null)}
+          onConfirm={() => {
+            const pending = projectCliConfirmation;
+            setProjectCliConfirmation(null);
+            void runAction(pending.onConfirm, "project-cli");
+          }}
+        />
+      ) : null}
+
       {projectCliPanelOpen ? (
         <ProjectCliPanel
           state={projectCliState}
@@ -839,9 +976,7 @@ function App() {
           onClose={() => setProjectSkillPanelOpen(false)}
           onLoadSkillTargets={() => void runAction(refreshProjectSkillTargetsPanel)}
           onUpdateSkill={(skillId, toolIds) => void runAction(() => saveProjectSkillTargets(skillId, toolIds))}
-          onUpdateLocalSkill={(skillId, toolIds) =>
-            void runAction(() => saveProjectSkillTargets(skillId, toolIds, { refreshSkillState: false, refreshLocalSkillState: true }))
-          }
+          onUpdateLocalSkill={(skillId, toolIds) => void runAction(() => saveProjectSkillTargets(skillId, toolIds))}
           onPickDirectory={pickDirectory}
           onMigrateLocalSkills={(skills, target) => void runAction(() => migrateProjectLocalSkills(skills, target))}
         />
@@ -936,7 +1071,7 @@ function App() {
           onRefresh={(cliId) => void runAction(() => refreshCliHubDiscovery(cliId), "clihub-refresh")}
           onCheckAll={() => void runAction(checkCliHubUpdates, "clihub-update-check")}
           onCheckOne={(cliId) => void runAction(() => checkCliHubUpdate(cliId), "clihub-update-check")}
-          onInstall={(cliId, channelId) => void runAction(() => installCliHubCli(cliId, channelId), "clihub-install")}
+          onInstall={(cliId, channelId, terminalInstall) => void runAction(() => installCliHubCli(cliId, channelId, terminalInstall), "clihub-install")}
           onUpdate={(cliId) => void runAction(() => updateCliHubCli(cliId), "clihub-update")}
           onAddLocal={(input) => void runAction(() => addCliHubLocalPath(input), "clihub-custom")}
           onAddInstallCommand={(input) => void runAction(() => addCliHubInstallCommand(input), "clihub-custom")}
@@ -987,6 +1122,7 @@ function App() {
           tools={tools}
           projectToolTargets={projectToolTargets}
           query={query}
+          queryLoading={detailLoading}
           warnings={warnings}
           repairCandidates={repairCandidates}
           ruleSyncStatus={ruleSyncStatus}
@@ -1416,6 +1552,10 @@ function App() {
     }
     const result = await client.deletePluginHubSource(sourceId, mode);
     await loadPluginHub();
+    if (result.failures.length > 0) {
+      setMessage(`Plugin source 未删除：${result.failures[0]?.reason ?? "清理失败"}`);
+      return;
+    }
     setMessage(`Plugin source 已删除：移除 ${result.sourcePlugins.length} 个 plugin，${result.sourceComponents.length} 个组件`);
   }
 
@@ -1429,6 +1569,10 @@ function App() {
     const result = await client.deletePluginHubPlugin(pluginId);
     await loadPluginHub();
     if (projectPluginPanelOpen) await refreshProjectPluginPanel();
+    if (result.failures.length > 0) {
+      setMessage(`Plugin 未删除：${result.failures[0]?.reason ?? "清理失败"}`);
+      return;
+    }
     setMessage(`Plugin 已删除：清理 ${result.projectBindings.length} 个项目 binding`);
   }
 
@@ -1484,16 +1628,26 @@ function App() {
     }
   }
 
-  async function installCliHubCli(cliId: string, channelId: string) {
+  async function installCliHubCli(cliId: string, channelId: string, terminalInstall: boolean) {
     const requestId = ++hubLoadSeqRef.current.clihub;
-    setCliHubStatus("CliHub 正在安装 CLI");
+    setCliHubStatus(terminalInstall ? "CliHub 正在打开安装终端" : "CliHub 正在安装 CLI");
     try {
+      if (terminalInstall) {
+        const result = await client.launchCliHubInstall(cliId, channelId);
+        const commandText = [result.command.command, ...result.command.args].join(" ");
+        setMessage(result.launched ? `已打开 CLI 安装终端：${commandText}` : result.reason ?? "CLI 安装终端启动失败");
+        return;
+      }
       const installed = await client.installCliHubCli(cliId, channelId);
       if (requestId === hubLoadSeqRef.current.clihub) setCliHub((current) => replaceCliHubCli(current, installed));
       const refreshed = await client.refreshCliHubDiscovery(cliId);
       if (requestId === hubLoadSeqRef.current.clihub) setCliHub(refreshed);
       setMessage("CliHub CLI 安装完成");
     } finally {
+      if (terminalInstall) {
+        const latest = await client.clihub().catch(() => null);
+        if (latest && requestId === hubLoadSeqRef.current.clihub) setCliHub(latest);
+      }
       if (requestId === hubLoadSeqRef.current.clihub) setCliHubStatus("");
     }
   }
@@ -1518,9 +1672,14 @@ function App() {
   }
 
   async function addCliHubInstallCommand(input: { installCommand: string; displayName?: string; commandName?: string }) {
-    await client.addCliHubInstallCommand(input.installCommand, input.displayName, input.commandName);
+    const cli = await client.addCliHubInstallCommand(input.installCommand, input.displayName, input.commandName);
+    const channel = cli.channels[0];
+    if (channel?.installCommand) {
+      await installCliHubCli(cli.cliId, channel.channelId, true);
+      return;
+    }
     await loadCliHub();
-    setMessage("自定义 CLI 安装完成");
+    setMessage("自定义 CLI 已添加");
   }
 
   async function addCliHubChannel(cliId: string, installCommand: string) {
@@ -1701,13 +1860,22 @@ function App() {
   async function runProjectCliAction(action: ProjectCliAction) {
     if (!selectedProjectId) return;
     if (action.requiresConfirmation) {
-      const impact = action.affectedPaths.length ? `\n影响路径：${action.affectedPaths.join("；")}` : "";
-      const confirmed = window.confirm(`确认执行项目 CLI 动作？\ncwd：${action.cwd}\ncommand：${action.commandText}${impact}`);
-      if (!confirmed) {
-        setMessage("已取消项目 CLI 动作");
-        return;
-      }
+      setProjectCliConfirmation({
+        title: "确认执行项目 CLI 动作",
+        label: action.label,
+        cwd: action.cwd,
+        commandText: action.commandText,
+        affectedPaths: action.affectedPaths,
+        writesProject: action.writesProject,
+        onConfirm: () => executeProjectCliAction(action)
+      });
+      return;
     }
+    await executeProjectCliAction(action);
+  }
+
+  async function executeProjectCliAction(action: ProjectCliAction) {
+    if (!selectedProjectId) return;
     const result = await client.executeProjectCliAction(selectedProjectId, action.actionId, projectCliTargetRoot ?? undefined, false);
     setLastProjectCliResult(result);
     if (result.status === "launched") {
@@ -1723,11 +1891,23 @@ function App() {
   async function runProjectCliCommand(command: ProjectCliCommand, argsText: string) {
     if (!selectedProjectId) return;
     const fullCommand = [command.commandText, argsText.trim()].filter(Boolean).join(" ");
-    const confirmed = window.confirm(`确认执行项目 CLI 命令？\ncwd：${command.cwd}\ncommand：${fullCommand}`);
-    if (!confirmed) {
-      setMessage("已取消项目 CLI 命令");
+    if (command.requiresConfirmation) {
+      setProjectCliConfirmation({
+        title: "确认执行项目 CLI 命令",
+        label: command.label,
+        cwd: command.cwd,
+        commandText: fullCommand,
+        affectedPaths: command.affectedPaths,
+        writesProject: command.writesProject,
+        onConfirm: () => executeProjectCliCommand(command, argsText)
+      });
       return;
     }
+    await executeProjectCliCommand(command, argsText);
+  }
+
+  async function executeProjectCliCommand(command: ProjectCliCommand, argsText: string) {
+    if (!selectedProjectId) return;
     const result = await client.executeProjectCliCommand(
       selectedProjectId,
       command.cliId,
@@ -1739,6 +1919,8 @@ function App() {
     setLastProjectCliResult(result);
     if (result.status === "launched") {
       setMessage(`已打开终端：${result.commandText}`);
+    } else if (result.status === "success") {
+      setMessage(`项目 CLI 命令完成：${result.label}`);
     } else {
       setMessage(`项目 CLI 命令失败：${result.label}`);
     }
@@ -2173,6 +2355,10 @@ function App() {
   ) {
     if (!selectedProjectId) return;
     const targetRootPath = projectSkillTargetRoot ?? undefined;
+    const currentSkill =
+      projectSkillState?.skills.find((skill) => skill.id === skillId) ??
+      projectLocalSkillState?.skills.find((skill) => skill.skillHubSkill?.id === skillId)?.skillHubSkill ??
+      null;
     let result = await client.updateProjectSkillTargets(selectedProjectId, skillId, toolIds, false, targetRootPath);
     if (result.requiresConfirmation) {
       const confirmed = window.confirm("项目使用工具中已有同名技能 link，是否替换为当前 SkillHub 技能？");
@@ -2181,10 +2367,11 @@ function App() {
       }
     }
     setLastProjectSkillResult(result);
-    if (options.refreshSkillState !== false) {
+    applyProjectSkillUpdateToCachedState(result, currentSkill);
+    if (options.refreshSkillState === true) {
       await loadProjectSkillTargetsPanel(selectedProjectId, targetRootPath);
     }
-    if (options.refreshLocalSkillState !== false) {
+    if (options.refreshLocalSkillState === true) {
       await loadProjectLocalSkillsPanel(selectedProjectId, projectLocalSkillTargetRoot ?? targetRootPath);
     }
     if (result.failures.length > 0) {
@@ -2194,6 +2381,28 @@ function App() {
     } else {
       setMessage("项目技能已更新");
     }
+  }
+
+  function applyProjectSkillUpdateToCachedState(
+    result: ProjectSkillUpdateResult,
+    skill: SkillHubList["skills"][number] | null
+  ) {
+    setProjectSkillState((current) =>
+      current?.projectId === result.projectId
+        ? {
+            ...current,
+            skillTargets: mergeProjectSkillTargets(current.skillTargets, result)
+          }
+        : current
+    );
+    setProjectLocalSkillState((current) =>
+      current?.projectId === result.projectId
+        ? {
+            ...current,
+            skills: mergeProjectLocalSkills(current.skills, result, skill)
+          }
+        : current
+    );
   }
 
   async function refreshRuleSyncStatus() {
@@ -2940,6 +3149,63 @@ function StatTile({ label, value }: { label: string; value: number }) {
   );
 }
 
+function ProjectCliConfirmDialog({
+  confirmation,
+  busy,
+  onCancel,
+  onConfirm
+}: {
+  confirmation: ProjectCliConfirmationState;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="settings-backdrop" role="presentation">
+      <section className="settings-dialog project-cli-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="project-cli-confirm-title">
+        <header>
+          <div>
+            <span className="eyebrow">Project CLI</span>
+            <h2 id="project-cli-confirm-title">{confirmation.title}</h2>
+          </div>
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+        </header>
+
+        <div className="project-cli-confirm-summary">
+          <strong>{confirmation.label}</strong>
+          <span className={`metric-pill${confirmation.writesProject ? " warning" : ""}`}>
+            {confirmation.writesProject ? "写项目目录" : "只读"}
+          </span>
+        </div>
+
+        <dl className="project-cli-action-meta project-cli-confirm-meta">
+          <dt>cwd</dt>
+          <dd>{confirmation.cwd}</dd>
+          <dt>command</dt>
+          <dd>{confirmation.commandText}</dd>
+          {confirmation.affectedPaths.length ? (
+            <>
+              <dt>影响路径</dt>
+              <dd>{confirmation.affectedPaths.join("；")}</dd>
+            </>
+          ) : null}
+        </dl>
+
+        <div className="settings-actions">
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+          <button className="primary" type="button" onClick={onConfirm} disabled={busy}>
+            执行
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function RuleSyncConfirmDialog({
   status,
   direction,
@@ -3088,12 +3354,46 @@ function RuleCreateDialog({
   );
 }
 
+function ProjectDetailFilter({
+  query,
+  loading,
+  onQueryChange
+}: {
+  query: string;
+  loading: boolean;
+  onQueryChange: (query: string) => void;
+}) {
+  const [value, setValue] = useState(query);
+
+  useEffect(() => {
+    setValue(query);
+  }, [query]);
+
+  useEffect(() => {
+    if (value === query) return;
+    const timer = window.setTimeout(() => onQueryChange(value), DETAIL_QUERY_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [onQueryChange, query, value]);
+
+  const pending = loading || value !== query;
+  return (
+    <div className="field wide detail-filter">
+      <label htmlFor="project-detail-filter">筛选标题和摘要</label>
+      <input id="project-detail-filter" value={value} onChange={(event) => setValue(event.target.value)} placeholder="输入关键词" />
+      <span className="detail-filter-status" aria-live="polite">
+        {pending ? "筛选更新中..." : ""}
+      </span>
+    </div>
+  );
+}
+
 function ProjectDetailView({
   project,
   detail,
   tools,
   projectToolTargets = [],
   query,
+  queryLoading = false,
   warnings,
   repairCandidates,
   ruleSyncStatus,
@@ -3125,6 +3425,7 @@ function ProjectDetailView({
   tools: ToolStatus[];
   projectToolTargets?: ProjectToolTarget[];
   query: string;
+  queryLoading?: boolean;
   warnings: ParserWarning[];
   repairCandidates: ProjectRepairCandidate[];
   ruleSyncStatus?: RuleSyncStatus | null;
@@ -3171,10 +3472,7 @@ function ProjectDetailView({
     <section className="content">
       <div className="toolbar-panel compact detail-command-panel">
         <div className="toolbar detail-controls-toolbar">
-          <label className="field wide detail-filter">
-            筛选标题和摘要
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" />
-          </label>
+          <ProjectDetailFilter query={query} loading={queryLoading} onQueryChange={setQuery} />
           <div className="detail-relocation">
             <div className="field current-root">
               <span>当前项目根目录</span>

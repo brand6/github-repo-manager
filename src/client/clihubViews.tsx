@@ -18,7 +18,7 @@ export function CliHubPage({
   onRefresh: (cliId?: string) => void;
   onCheckAll: () => void;
   onCheckOne: (cliId: string) => void;
-  onInstall: (cliId: string, channelId: string) => void;
+  onInstall: (cliId: string, channelId: string, terminalInstall: boolean) => void;
   onUpdate: (cliId: string) => void;
   onAddLocal: (input: { executablePath: string; displayName?: string; commandName?: string }) => void;
   onAddInstallCommand: (input: { installCommand: string; displayName?: string; commandName?: string }) => void;
@@ -162,7 +162,7 @@ function CliHubCliRow({
   cli: CliHubCli;
   busy: boolean;
   onCheckOne: (cliId: string) => void;
-  onInstall: (cliId: string, channelId: string) => void;
+  onInstall: (cliId: string, channelId: string, terminalInstall: boolean) => void;
   onUpdate: (cliId: string) => void;
   onAddChannel: (cliId: string, installCommand: string) => void;
 }) {
@@ -249,16 +249,23 @@ function CliHubChannelRow({
   cli: CliHubCli;
   channel: CliHubChannel;
   busy: boolean;
-  onInstall: (cliId: string, channelId: string) => void;
+  onInstall: (cliId: string, channelId: string, terminalInstall: boolean) => void;
 }) {
-  const installDisabled = busy || cli.availabilityState === "available" || !channel.installCommand;
+  const installDisabled = busy || cli.availabilityState === "available" || (!channel.installCommand && !channel.appManaged);
+  const terminalInstall = Boolean(channel.installCommand);
   return (
     <div className="clihub-channel-row">
       <div>
         <strong>{channel.label}</strong>
         <small>{channel.installCommand ? channel.installCommand.join(" ") : "无安装命令"}</small>
       </div>
-      <button className="primary" type="button" disabled={installDisabled} onClick={() => onInstall(cli.cliId, channel.channelId)}>
+      <button
+        className="primary"
+        type="button"
+        disabled={installDisabled}
+        title={terminalInstall ? "打开 PowerShell 执行安装并查看实时状态" : undefined}
+        onClick={() => onInstall(cli.cliId, channel.channelId, terminalInstall)}
+      >
         安装
       </button>
     </div>

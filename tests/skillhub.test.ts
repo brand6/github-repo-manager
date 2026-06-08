@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultAppConfig } from "../src/server/core/bootstrap.js";
 import { AppDatabase } from "../src/server/storage/database.js";
 import {
@@ -25,7 +25,7 @@ import {
   prepareRuleFileCreate
 } from "../src/server/skillhub/ruleSync.js";
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../src/server/skillhub/projectSkills.js";
-import { toolIds, type AppConfig, type Project, type ToolId } from "../src/shared/types.js";
+import { toolIds, type AppConfig, type Project, type SkillHubSkill, type SkillHubSource, type ToolId } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 
 let directory: string | null = null;
@@ -220,6 +220,110 @@ describe("SkillHub", () => {
     expect(fs.existsSync(skillB.libraryPath)).toBe(false);
     expect(db.listProjectSkillTargetsForSkill(skillB.id)).toEqual([]);
     db.close();
+  });
+
+  it("resolves each local SkillHub link once instead of comparing against every center skill", () => {
+    const project = projectFixture("E:\\repo");
+    const config = configFixture("E:\\data");
+    const projectRoot = project.rootPath;
+    const libraryRoot = path.join(config.skillhub.rootDir, "library", "source", "skills");
+    const skillDirectory = path.join(projectRoot, ".codex", "skills");
+    const linkPath = path.join(skillDirectory, "skill-02");
+    const skillFile = path.join(linkPath, "SKILL.md");
+    const linkTarget = path.join(libraryRoot, "skill-02");
+    const source: SkillHubSource = {
+      id: "source",
+      type: "local",
+      label: "source",
+      input: "E:\\source",
+      inputPath: null,
+      resolvedPath: "E:\\source",
+      repoKey: null,
+      remoteUrl: null,
+      owner: null,
+      repo: null,
+      branch: null,
+      currentRevision: null,
+      checkoutPath: null,
+      createdAt: "2026-06-01T00:00:00Z",
+      updatedAt: "2026-06-01T00:00:00Z"
+    };
+    const skills: SkillHubSkill[] = Array.from({ length: 3 }, (_, index) => {
+      const folderName = `skill-${String(index).padStart(2, "0")}`;
+      const libraryPath = path.join(libraryRoot, folderName);
+      return {
+        id: `skill-${index}`,
+        sourceId: source.id,
+        sourceType: source.type,
+        folderName,
+        skillName: folderName,
+        description: folderName,
+        libraryRelativePath: `source/skills/${folderName}`,
+        libraryPath,
+        sourceRelativePath: `skills/${folderName}`,
+        contentHash: `hash-${index}`,
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-06-01T00:00:00Z",
+        source
+      };
+    });
+    const database = {
+      listStoredProjectToolTargets: () => [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          enabled: true,
+          inferred: false,
+          supported: true,
+          skillDirectory,
+          reason: null,
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ],
+      listSessionsForProject: () => [],
+      upsertProjectToolTarget: () => null,
+      listSkillHubSkills: () => skills,
+      listSkillHubSources: () => [source],
+      listProjectPluginBindings: () => []
+    } as unknown as AppDatabase;
+
+    const existsSync = vi.spyOn(fs, "existsSync").mockImplementation((input) => {
+      const value = path.normalize(String(input));
+      if (value === path.normalize(skillDirectory) || value === path.normalize(skillFile)) return true;
+      return false;
+    });
+    const readdirSync = vi.spyOn(fs, "readdirSync").mockImplementation((input) => {
+      if (path.normalize(String(input)) === path.normalize(skillDirectory)) {
+        return [{ name: "skill-02", isDirectory: () => false, isSymbolicLink: () => true }] as fs.Dirent[];
+      }
+      return [];
+    });
+    const statSync = vi.spyOn(fs, "statSync").mockImplementation((input) => {
+      if (path.normalize(String(input)) === path.normalize(skillFile)) return { isFile: () => true } as fs.Stats;
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    const lstatSync = vi.spyOn(fs, "lstatSync").mockImplementation((input) => {
+      if (path.normalize(String(input)) === path.normalize(linkPath)) return { isSymbolicLink: () => true } as fs.Stats;
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((input) => {
+      if (path.normalize(String(input)) === path.normalize(skillFile)) return skillText("skill-02", "skill-02");
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    const readlinkSync = vi.spyOn(fs, "readlinkSync");
+    readlinkSync.mockReturnValue(linkTarget);
+    try {
+      const state = listProjectLocalSkillsState(database, project, config);
+      expect(state.skills).toMatchObject([{ type: "skillhub", folderName: "skill-02" }]);
+      expect(readlinkSync).toHaveBeenCalledTimes(1);
+    } finally {
+      readlinkSync.mockRestore();
+      readFileSync.mockRestore();
+      lstatSync.mockRestore();
+      statSync.mockRestore();
+      readdirSync.mockRestore();
+      existsSync.mockRestore();
+    }
   });
 
   it("keeps SkillHub targets and library content when project link removal fails", () => {

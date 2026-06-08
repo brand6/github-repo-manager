@@ -71,6 +71,10 @@ describe("Project CLI API", () => {
               commandText: "git init",
               description: expect.stringContaining("创建 Git 仓库"),
               cwd: projectRoot,
+              executionMode: "terminal",
+              writesProject: true,
+              requiresConfirmation: true,
+              affectedPaths: [path.join(projectRoot, ".git")],
               localPath: gitPath
             }),
             expect.objectContaining({
@@ -82,6 +86,10 @@ describe("Project CLI API", () => {
               commandText: "git status --short",
               description: expect.stringContaining("未提交变更"),
               cwd: projectRoot,
+              executionMode: "terminal",
+              writesProject: false,
+              requiresConfirmation: false,
+              affectedPaths: [],
               localPath: gitPath
             })
           ])
@@ -99,6 +107,9 @@ describe("Project CLI API", () => {
               args: ["pr", "list"],
               commandText: "gh pr list",
               cwd: projectRoot,
+              executionMode: "terminal",
+              writesProject: false,
+              requiresConfirmation: false,
               localPath: ghPath
             })
           ])
@@ -106,12 +117,12 @@ describe("Project CLI API", () => {
       ])
     );
 
-    const launched = await request(app)
+    const ran = await request(app)
       .post(`/api/projects/${added.body.project.id}/cli-actions/commands/${encodeURIComponent("git")}/execute`)
       .set("x-local-api-token", context.token)
       .send({ commandId: "status", argsText: "--ignored", dryRun: true })
       .expect(200);
-    expect(launched.body).toMatchObject({
+    expect(ran.body).toMatchObject({
       actionId: "command:git:status",
       cliId: "git",
       label: "查看状态",
@@ -121,11 +132,14 @@ describe("Project CLI API", () => {
       cwd: projectRoot,
       executionMode: "terminal",
       status: "launched",
+      exitCode: null,
       launch: {
         launched: true,
+        host: expectedProjectCliTerminalHost(),
         command: { command: "git", args: ["status", "--short", "--ignored"], cwd: projectRoot }
       }
     });
+    expect(runner.executed).toEqual([]);
   });
 
   it("lists and runs CodeGraph actions for the selected project group without requiring a real install", async () => {
@@ -174,7 +188,6 @@ describe("Project CLI API", () => {
 
     runner.lookups.codegraph = [codegraphPath];
     runner.runs[`${codegraphPath} --version`] = { exitCode: 0, stdout: "codegraph 0.4.0", stderr: "" };
-    runner.runs["codegraph status"] = { exitCode: 0, stdout: "Index is ready", stderr: "" };
     await request(app)
       .post("/api/clihub/discovery/refresh")
       .set("x-local-api-token", context.token)
@@ -211,7 +224,7 @@ describe("Project CLI API", () => {
         expect.objectContaining({
           actionId: "codegraph:status",
           args: ["status"],
-          executionMode: "inline",
+          executionMode: "terminal",
           writesProject: false
         })
       ])
@@ -220,14 +233,19 @@ describe("Project CLI API", () => {
     const status = await request(app)
       .post(`/api/projects/${added.body.project.id}/cli-actions/${encodeURIComponent("codegraph:status")}/execute`)
       .set("x-local-api-token", context.token)
-      .send({ targetRootPath: childRoot })
+      .send({ targetRootPath: childRoot, dryRun: true })
       .expect(200);
     expect(status.body).toMatchObject({
       actionId: "codegraph:status",
       cwd: childRoot,
-      status: "success",
-      exitCode: 0,
-      stdout: "Index is ready"
+      executionMode: "terminal",
+      status: "launched",
+      exitCode: null,
+      launch: {
+        launched: true,
+        host: expectedProjectCliTerminalHost(),
+        command: { command: "codegraph", args: ["status"], cwd: childRoot }
+      }
     });
 
     const launched = await request(app)
@@ -243,7 +261,7 @@ describe("Project CLI API", () => {
         command: { command: "codegraph", args: ["init", "-i"], cwd: childRoot }
       }
     });
-    expect(runner.executed).toContain("codegraph status");
+    expect(runner.executed).not.toContain("codegraph status");
     expect(runner.executed).not.toContain("codegraph init -i");
 
     await request(app)
@@ -259,6 +277,10 @@ describe("Project CLI API", () => {
       .expect(400);
   });
 });
+
+function expectedProjectCliTerminalHost(): "powershell" | "direct" {
+  return process.platform === "win32" ? "powershell" : "direct";
+}
 
 class FakeCliRunner implements CliHubCommandRunner {
   executed: string[] = [];
