@@ -244,6 +244,13 @@ export const client = {
       ...(targetRootPath ? { targetRootPath } : {}),
       dryRun
     }),
+  executeProjectCliCommand: (id: string, cliId: string, commandId: string, argsText: string, targetRootPath?: string, dryRun = false) =>
+    apiPost<ProjectCliActionRunResult>(`/api/projects/${id}/cli-actions/commands/${encodeURIComponent(cliId)}/execute`, {
+      commandId,
+      argsText,
+      ...(targetRootPath ? { targetRootPath } : {}),
+      dryRun
+    }),
   projectSkillTargets: (id: string, targetRootPath?: string) =>
     apiGet<ProjectSkillTargetsState>(`/api/projects/${id}/skill-targets${projectTargetQuery(targetRootPath)}`),
   updateProjectSkillTargets: (id: string, skillId: string, toolIds: string[], replaceConflicts = false, targetRootPath?: string) =>

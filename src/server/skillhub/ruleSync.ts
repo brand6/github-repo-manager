@@ -23,6 +23,7 @@ interface RuleSyncOptions {
 }
 
 const ruleFiles: RuleFileName[] = ["AGENTS.md", "CLAUDE.md"];
+const commandAvailabilityCache = new Map<string, boolean>();
 
 export const DEFAULT_CLAUDE_RULE_TEMPLATE = `# CLAUDE.md
 
@@ -237,8 +238,8 @@ function ruleFileStatus(projectRoot: string, file: RuleFileName, gitRoot: string
   const filePath = path.join(projectRoot, file);
   const exists = fs.existsSync(filePath);
   const stat = exists ? fs.statSync(filePath) : null;
-  const gitManaged = gitRoot ? gitExit(projectRoot, ["ls-files", "--error-unmatch", "--", filePath], gitCommand) === 0 : null;
-  const dirty = gitRoot && gitManaged ? Boolean(gitOutput(projectRoot, ["status", "--porcelain", "--", filePath], gitCommand, false)) : null;
+  const gitManaged = exists && gitRoot ? gitExit(projectRoot, ["ls-files", "--error-unmatch", "--", file], gitCommand) === 0 : null;
+  const dirty = exists && gitRoot && gitManaged ? Boolean(gitOutput(projectRoot, ["status", "--porcelain", "--", file], gitCommand, false)) : null;
   return {
     file,
     path: filePath,
@@ -319,7 +320,11 @@ function commitResult(
 }
 
 function commandAvailable(command: string): boolean {
-  return spawnSync(command, ["--version"], { stdio: "ignore" }).status === 0;
+  const cached = commandAvailabilityCache.get(command);
+  if (cached !== undefined) return cached;
+  const available = spawnSync(command, ["--version"], { stdio: "ignore" }).status === 0;
+  commandAvailabilityCache.set(command, available);
+  return available;
 }
 
 function gitExit(cwd: string, args: string[], gitCommand: string): number | null {

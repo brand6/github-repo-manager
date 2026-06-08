@@ -134,6 +134,7 @@ import {
 import {
   ProjectCliActionError,
   executeProjectCliAction,
+  executeProjectCliCommand,
   listProjectCliActions
 } from "../projectCli/projectCliActions.js";
 import { applyRuleSync, commitRuleSyncTarget, createRuleFile, createRuleTemplateFile, getRuleSyncStatus, openRuleFile, prepareRuleFileCreate } from "../skillhub/ruleSync.js";
@@ -938,6 +939,34 @@ export function installApi(app: Express, context: AppContext): void {
     if (!project) return;
     response.json(listProjectCliActions(context.database(), project));
   });
+
+  app.post(
+    "/api/projects/:id/cli-actions/commands/:cliId/execute",
+    asyncHandler(async (request, response) => {
+      const project = projectSkillScopeFromRequest(context, request, response);
+      const cliId = stringParam(request, "cliId");
+      const commandId = stringBody(request, "commandId") ?? stringBody(request, "command");
+      const argsText = typeof request.body?.argsText === "string" ? request.body.argsText : null;
+      if (!project) return;
+      if (!cliId || !commandId) {
+        response.status(404).json({ error: "project-cli-command-not-found" });
+        return;
+      }
+      try {
+        response.json(
+          await executeProjectCliCommand(context.database(), project, cliId, commandId, argsText, context.config(), {
+            dryRun: Boolean(request.body?.dryRun)
+          })
+        );
+      } catch (error) {
+        if (error instanceof ProjectCliActionError) {
+          response.status(error.statusCode).json({ error: error.code, reason: error.message });
+          return;
+        }
+        response.status(400).json({ error: "project-cli-command-failed", reason: error instanceof Error ? error.message : "project-cli-command-failed" });
+      }
+    })
+  );
 
   app.post(
     "/api/projects/:id/cli-actions/:actionId/execute",

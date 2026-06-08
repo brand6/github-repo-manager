@@ -733,6 +733,19 @@ describe("SkillHub", () => {
     expect(refreshed.files["CLAUDE.md"]).toMatchObject({ gitManaged: true, dirty: false });
   });
 
+  (gitAvailable() ? it : it.skip)("leaves git metadata unread for missing rule files in a git repo", () => {
+    directory = testDir("skillhub-rule-sync-missing-git-metadata");
+    const projectRoot = path.join(directory, "repo");
+    gitInit(projectRoot);
+    const project = projectFixture(projectRoot);
+
+    const status = getRuleSyncStatus(project);
+
+    expect(path.resolve(status.gitRoot ?? "")).toBe(path.resolve(projectRoot));
+    expect(status.files["AGENTS.md"]).toMatchObject({ exists: false, gitManaged: null, dirty: null });
+    expect(status.files["CLAUDE.md"]).toMatchObject({ exists: false, gitManaged: null, dirty: null });
+  });
+
   it("previews and creates rule files from a template or another rule file", () => {
     directory = testDir("skillhub-rule-template");
     const projectRoot = path.join(directory, "repo");

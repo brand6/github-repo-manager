@@ -95,6 +95,7 @@ const clientMock = vi.hoisted(() => ({
   updateProjectToolTargets: vi.fn(),
   projectCliActions: vi.fn(),
   executeProjectCliAction: vi.fn(),
+  executeProjectCliCommand: vi.fn(),
   projectSkillTargets: vi.fn(),
   updateProjectSkillTargets: vi.fn(),
   projectLocalSkills: vi.fn(),
@@ -368,6 +369,7 @@ describe("HomePage", () => {
     clientMock.updateProjectToolTargets.mockResolvedValue([]);
     clientMock.projectCliActions.mockResolvedValue(projectCliStateFixture(projectFixture("E:\\old"), { registered: false }));
     clientMock.executeProjectCliAction.mockResolvedValue(projectCliRunResultFixture(projectFixture("E:\\old")));
+    clientMock.executeProjectCliCommand.mockResolvedValue(projectCliRunResultFixture(projectFixture("E:\\old"), undefined, { command: "git", args: ["status"], commandText: "git status" }));
     clientMock.updateProjectSkillTargets.mockResolvedValue({
       projectId: "project-1",
       skillId: "skill-1",
@@ -2075,7 +2077,7 @@ describe("HomePage", () => {
     expect(await screen.findByText("本地技能已迁移到 SkillHub")).toBeInTheDocument();
   });
 
-  it("clears stale local skill rows while reopening the project skill panel refreshes from disk", async () => {
+  it("keeps cached local skill rows while reopening the project skill panel refreshes from disk", async () => {
     const project = projectFixture("E:\\old");
     const initialLocalSkills: ProjectLocalSkillsState = {
       projectId: project.id,
@@ -2122,8 +2124,9 @@ describe("HomePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "技能" }));
 
-    await waitFor(() => expect(within(panel).getByText("正在读取本地技能...")).toBeInTheDocument());
-    expect(within(panel).queryByText("review")).not.toBeInTheDocument();
+    await waitFor(() => expect(clientMock.projectLocalSkills).toHaveBeenCalledTimes(2));
+    expect(within(panel).queryByText("正在读取本地技能...")).not.toBeInTheDocument();
+    expect(within(panel).getByText("review")).toBeInTheDocument();
 
     resolveRefresh(refreshedLocalSkills);
 
@@ -2182,6 +2185,7 @@ describe("HomePage", () => {
     const panel = await screen.findByRole("complementary", { name: "项目 CLI 管理" });
     expect(within(panel).getAllByText(childRoot).length).toBeGreaterThan(0);
     expect(within(panel).getByText("CodeGraph")).toBeInTheDocument();
+    fireEvent.click(within(panel).getByText("CodeGraph"));
     expect(within(panel).getByText("codegraph status")).toBeInTheDocument();
     expect(within(panel).getAllByText(`${childRoot}\\.codegraph`).length).toBeGreaterThan(0);
 
@@ -2192,12 +2196,24 @@ describe("HomePage", () => {
     expect(await screen.findByText("项目 CLI 动作完成：查看状态")).toBeInTheDocument();
   });
 
-  it("renders installed function and dependency CLI commands without requiring action buttons", async () => {
+  it("expands installed function and dependency CLI commands with args input and execute buttons", async () => {
     const project = projectFixture("E:\\repo");
     const childRoot = "E:\\repo\\packages\\app";
     const gitPath = "C:\\Program Files\\Git\\cmd\\git.exe";
     clientMock.projects.mockResolvedValue([project]);
     clientMock.detail.mockResolvedValue(detailWithChildGroup(project, childRoot));
+    clientMock.executeProjectCliCommand.mockResolvedValue(
+      projectCliRunResultFixture(project, childRoot, {
+        actionId: "command:git:status",
+        cliId: "git",
+        label: "查看状态",
+        command: "git",
+        args: ["status", "--short", "--ignored"],
+        commandText: "git status --short --ignored",
+        status: "launched",
+        stdout: ""
+      })
+    );
     clientMock.projectCliActions.mockResolvedValue({
       projectId: project.id,
       targetRootPath: childRoot,
@@ -2213,11 +2229,32 @@ describe("HomePage", () => {
           },
           commands: [
             {
+              commandId: "init",
               cliId: "git",
               displayName: "Git",
               kind: "dependency",
+              label: "初始化仓库",
               command: "git",
-              commandText: "git",
+              args: ["init"],
+              commandText: "git init",
+              description: "在当前 Project Group 目录创建 Git 仓库。",
+              argsPlaceholder: "可选参数，例如 -b main",
+              cwd: childRoot,
+              localPath: gitPath,
+              resolvedPaths: [gitPath],
+              version: "git version 2.51.0.windows.1"
+            },
+            {
+              commandId: "status",
+              cliId: "git",
+              displayName: "Git",
+              kind: "dependency",
+              label: "查看状态",
+              command: "git",
+              args: ["status", "--short"],
+              commandText: "git status --short",
+              description: "查看当前目录的未提交变更、暂存区和未跟踪文件。",
+              argsPlaceholder: "可选参数，例如 --ignored",
               cwd: childRoot,
               localPath: gitPath,
               resolvedPaths: [gitPath],
@@ -2240,11 +2277,22 @@ describe("HomePage", () => {
 
     const panel = await screen.findByRole("complementary", { name: "项目 CLI 管理" });
     expect(within(panel).queryByText("没有可用项目 CLI 命令或动作")).not.toBeInTheDocument();
-    expect(within(panel).getByText("Git")).toBeInTheDocument();
-    expect(within(panel).getByText("依赖 CLI")).toBeInTheDocument();
+    fireEvent.click(within(panel).getByText("Git"));
+    expect(within(panel).getAllByText("依赖 CLI").length).toBeGreaterThan(1);
+    expect(within(panel).getByText("初始化仓库")).toBeInTheDocument();
+    expect(within(panel).getByText("查看状态")).toBeInTheDocument();
+    expect(within(panel).getByText("查看当前目录的未提交变更、暂存区和未跟踪文件。")).toBeInTheDocument();
+    expect(within(panel).getByText("git init")).toBeInTheDocument();
+    expect(within(panel).getByText("git status --short")).toBeInTheDocument();
     expect(within(panel).getAllByText("git").length).toBeGreaterThan(0);
-    expect(within(panel).getByText(gitPath)).toBeInTheDocument();
-    expect(within(panel).queryByRole("button", { name: "git" })).not.toBeInTheDocument();
+    expect(within(panel).queryByText(gitPath)).not.toBeInTheDocument();
+    fireEvent.change(within(panel).getByLabelText("查看状态 附加参数"), { target: { value: "--ignored" } });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(within(panel).getByRole("button", { name: "执行 查看状态" }));
+
+    await waitFor(() => expect(clientMock.executeProjectCliCommand).toHaveBeenCalledWith(project.id, "git", "status", "--ignored", childRoot, false));
+    expect(confirm).toHaveBeenCalledWith(`确认执行项目 CLI 命令？\ncwd：${childRoot}\ncommand：git status --short --ignored`);
+    expect(await screen.findByText("已打开终端：git status --short --ignored")).toBeInTheDocument();
   });
 
   it("opens project Agent panel for a child group and handles apply conflicts and local migration", async () => {
@@ -2762,6 +2810,28 @@ describe("HomePage", () => {
     expect(buttons.slice(-2)).toEqual(["刷新项目", "设置"]);
   });
 
+  it("loads project rule status only after expanding project config and shows failures", async () => {
+    const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.ruleSyncStatus.mockRejectedValue(new Error("git status timeout"));
+
+    render(<App />);
+
+    await screen.findByText("new-ai-game");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+
+    expect(clientMock.ruleSyncStatus).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("项目配置"));
+
+    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id));
+    const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
+    expect(await within(ruleSyncSection).findByText("规则状态读取失败")).toBeInTheDocument();
+    expect(within(ruleSyncSection).getByText("git status timeout")).toBeInTheDocument();
+  });
+
   it("confirms rule sync with target status explanations before applying", async () => {
     const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
     const status = ruleSyncStatusFixture(project);
@@ -2798,6 +2868,8 @@ describe("HomePage", () => {
     await screen.findByText("new-ai-game");
     fireEvent.click(screen.getByRole("button", { name: "打开" }));
     await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByText("项目配置"));
+    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id));
 
     const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
     const agentsRow = await within(ruleSyncSection).findByRole("article", { name: "AGENTS.md 规则文件" });
@@ -2859,6 +2931,8 @@ describe("HomePage", () => {
     await screen.findByText("new-ai-game");
     fireEvent.click(screen.getByRole("button", { name: "打开" }));
     await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByText("项目配置"));
+    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id));
 
     const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
     expect(await within(ruleSyncSection).findByText("未发现规则文件")).toBeInTheDocument();
@@ -3528,8 +3602,12 @@ function projectCliStateFixture(
   };
 }
 
-function projectCliRunResultFixture(project: Project, targetRootPath = project.rootPath): ProjectCliActionRunResult {
-  return {
+function projectCliRunResultFixture(
+  project: Project,
+  targetRootPath = project.rootPath,
+  overrides: Partial<ProjectCliActionRunResult> = {}
+): ProjectCliActionRunResult {
+  const result: ProjectCliActionRunResult = {
     projectId: project.id,
     targetRootPath,
     actionId: "codegraph:status",
@@ -3548,6 +3626,7 @@ function projectCliRunResultFixture(project: Project, targetRootPath = project.r
     stderr: "",
     launch: null
   };
+  return { ...result, ...overrides };
 }
 
 function agentHubSourceFixture(): AgentHubList["sources"][number] {

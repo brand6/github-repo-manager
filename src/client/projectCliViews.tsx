@@ -6,12 +6,14 @@ export function ProjectCliPanel({
   busy,
   lastResult,
   onClose,
+  onRunCommand,
   onRunAction
 }: {
   state: ProjectCliActionState | null;
   busy: boolean;
   lastResult: ProjectCliActionRunResult | null;
   onClose: () => void;
+  onRunCommand: (command: ProjectCliCommand, argsText: string) => void;
   onRunAction: (action: ProjectCliAction) => void;
 }) {
   return (
@@ -36,18 +38,26 @@ export function ProjectCliPanel({
               <div className="empty-state compact">没有可用项目 CLI 命令或动作</div>
             ) : (
               state.groups.map((group) => (
-                <section className="project-cli-group" key={group.cliId} aria-label={`${group.displayName} CLI`}>
-                  <div className="project-cli-group-header">
+                <details className="project-cli-group" key={group.cliId}>
+                  <summary className="project-cli-group-header">
                     <strong>{group.displayName}</strong>
                     <span className={`metric-pill${group.availability.state === "available" ? "" : " danger"}`}>
                       {availabilityLabel(group.availability.state)}
                     </span>
-                  </div>
+                    {(group.commands ?? []).length ? <span className="metric-pill">{(group.commands ?? []).length} 个命令</span> : null}
+                    {group.actions.length ? <span className="metric-pill">{group.actions.length} 个动作</span> : null}
+                  </summary>
                   {group.availability.reason ? <p className="muted compact">{group.availability.reason}</p> : null}
                   {(group.commands ?? []).length ? (
                     <div className="project-cli-command-list">
                       {(group.commands ?? []).map((command) => (
-                        <ProjectCliCommandRow key={`${command.cliId}:${command.command}`} command={command} />
+                        <ProjectCliCommandRow
+                          key={`${command.cliId}:${command.commandId}`}
+                          command={command}
+                          busy={busy}
+                          result={lastResult?.actionId === projectCliCommandActionId(command) ? lastResult : null}
+                          onRunCommand={onRunCommand}
+                        />
                       ))}
                     </div>
                   ) : null}
@@ -64,7 +74,7 @@ export function ProjectCliPanel({
                       ))}
                     </div>
                   ) : null}
-                </section>
+                </details>
               ))
             )}
           </div>
@@ -74,28 +84,47 @@ export function ProjectCliPanel({
   );
 }
 
-function ProjectCliCommandRow({ command }: { command: ProjectCliCommand }) {
+function ProjectCliCommandRow({
+  command,
+  busy,
+  result,
+  onRunCommand
+}: {
+  command: ProjectCliCommand;
+  busy: boolean;
+  result: ProjectCliActionRunResult | null;
+  onRunCommand: (command: ProjectCliCommand, argsText: string) => void;
+}) {
+  const [argsText, setArgsText] = React.useState("");
   return (
     <article className="project-cli-command-row">
       <div className="project-cli-action-main">
         <div className="project-cli-action-title">
-          <strong>{command.command}</strong>
+          <strong>{command.label}</strong>
+          <span className="metric-pill">{command.command}</span>
           <span className="metric-pill">{commandKindLabel(command.kind)}</span>
           {command.version ? <span className="metric-pill">{command.version}</span> : null}
         </div>
+        <p className="muted compact">{command.description}</p>
         <dl className="project-cli-action-meta">
-          <dt>cwd</dt>
-          <dd>{command.cwd}</dd>
           <dt>command</dt>
           <dd>{command.commandText}</dd>
-          {command.localPath ? (
-            <>
-              <dt>path</dt>
-              <dd>{command.localPath}</dd>
-            </>
-          ) : null}
         </dl>
       </div>
+      <label className="project-cli-args-input">
+        附加参数
+        <input
+          value={argsText}
+          disabled={busy}
+          onChange={(event) => setArgsText(event.target.value)}
+          placeholder={command.argsPlaceholder ?? "可选参数"}
+          aria-label={`${command.label} 附加参数`}
+        />
+      </label>
+      <button className="primary" type="button" disabled={busy} onClick={() => onRunCommand(command, argsText)}>
+        执行 {command.label}
+      </button>
+      {result ? <ProjectCliActionResult result={result} /> : null}
     </article>
   );
 }
@@ -175,4 +204,8 @@ function modeLabel(mode: ProjectCliAction["executionMode"]): string {
 
 function commandKindLabel(kind: ProjectCliCommand["kind"]): string {
   return kind === "function" ? "功能 CLI" : "依赖 CLI";
+}
+
+function projectCliCommandActionId(command: Pick<ProjectCliCommand, "cliId" | "commandId">): string {
+  return `command:${command.cliId}:${command.commandId}`;
 }

@@ -222,11 +222,16 @@ export interface ProjectCliAction {
 }
 
 export interface ProjectCliCommand {
+  commandId: string;
   cliId: string;
   displayName: string;
   kind: Extract<CliHubCliKind, "function" | "dependency">;
+  label: string;
   command: string;
+  args: string[];
   commandText: string;
+  description: string;
+  argsPlaceholder: string | null;
   cwd: string;
   localPath: string | null;
   resolvedPaths: string[];

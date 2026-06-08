@@ -89,3 +89,5 @@ This feature should use the same product boundary as other project-side Hub pane
 
 - 2026-06-08：实现时确认 CodeGraph 作为自定义功能 CLI 验证 Project CLI 动作，不加入 CliHub 内置 function CLI 清单；命令名来自 CliHub 自定义 install command / local path 记录的解析结果。
 - 2026-06-08：根据反馈补充边界：项目 CLI 面板动态展示 AI 项目管理系统 CliHub 中已安装的 `function` / `dependency` CLI 命令，例如 `gh`、`git`、`node`；这些命令展示不等于允许任意执行，只有 registry 显式定义的项目动作才显示执行按钮。
+- 2026-06-08：项目 CLI 面板展示结构调整为第一层 `CLI` 名称，展开后显示该 CLI 的命令、用途描述、参数输入框和执行按钮；参数只解析为 argv 并传给 CliHub 已发现的命令，cwd 固定为当前 Project Group。
+- 2026-06-08：项目 CLI 面板的“命令”改为常用命令模板：例如 `Git` 下显示“初始化仓库”“查看状态”等中文动作，后端 registry 负责维护模板、默认参数和描述，前端只允许追加附加参数，不要求用户记住子命令。

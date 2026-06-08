@@ -61,32 +61,71 @@ describe("Project CLI API", () => {
           cliId: "git",
           displayName: "Git",
           actions: [],
-          commands: [
+          commands: expect.arrayContaining([
             expect.objectContaining({
+              commandId: "init",
+              label: "初始化仓库",
               kind: "dependency",
               command: "git",
-              commandText: "git",
+              args: ["init"],
+              commandText: "git init",
+              description: expect.stringContaining("创建 Git 仓库"),
+              cwd: projectRoot,
+              localPath: gitPath
+            }),
+            expect.objectContaining({
+              commandId: "status",
+              label: "查看状态",
+              kind: "dependency",
+              command: "git",
+              args: ["status", "--short"],
+              commandText: "git status --short",
+              description: expect.stringContaining("未提交变更"),
               cwd: projectRoot,
               localPath: gitPath
             })
-          ]
+          ])
         }),
         expect.objectContaining({
           cliId: "gh",
           displayName: "GitHub CLI",
           actions: [],
-          commands: [
+          commands: expect.arrayContaining([
             expect.objectContaining({
+              commandId: "pr-list",
+              label: "查看 PR 列表",
               kind: "function",
               command: "gh",
-              commandText: "gh",
+              args: ["pr", "list"],
+              commandText: "gh pr list",
               cwd: projectRoot,
               localPath: ghPath
             })
-          ]
+          ])
         })
       ])
     );
+
+    const launched = await request(app)
+      .post(`/api/projects/${added.body.project.id}/cli-actions/commands/${encodeURIComponent("git")}/execute`)
+      .set("x-local-api-token", context.token)
+      .send({ commandId: "status", argsText: "--ignored", dryRun: true })
+      .expect(200);
+    expect(launched.body).toMatchObject({
+      actionId: "command:git:status",
+      cliId: "git",
+      label: "查看状态",
+      command: "git",
+      args: ["status", "--short", "--ignored"],
+      commandText: "git status --short --ignored",
+      cwd: projectRoot,
+      executionMode: "terminal",
+      status: "launched",
+      launch: {
+        launched: true,
+        command: { command: "git", args: ["status", "--short", "--ignored"], cwd: projectRoot }
+      }
+    });
   });
 
   it("lists and runs CodeGraph actions for the selected project group without requiring a real install", async () => {

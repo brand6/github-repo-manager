@@ -2379,6 +2379,10 @@ dd {
   min-width: 0;
 }
 
+.project-cli-group > summary {
+  cursor: pointer;
+}
+
 .project-cli-group-header,
 .project-cli-action-title {
   display: flex;
@@ -2415,6 +2419,27 @@ dd {
 
 .project-cli-command-row {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.project-cli-command-row .inline-warning {
+  grid-column: 1 / -1;
+}
+
+.project-cli-args-input {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.project-cli-args-input input {
+  width: 100%;
+}
+
+.project-cli-command-row > button {
+  justify-self: start;
 }
 
 .project-cli-action-main {
