@@ -27,6 +27,13 @@ export function isTerminalMode(value: unknown): value is TerminalMode {
   return terminalModes.includes(value as TerminalMode);
 }
 
+export const projectResourceDirectoryPreferences = ["private", "public"] as const;
+export type ProjectResourceDirectoryPreference = (typeof projectResourceDirectoryPreferences)[number];
+
+export function isProjectResourceDirectoryPreference(value: unknown): value is ProjectResourceDirectoryPreference {
+  return projectResourceDirectoryPreferences.includes(value as ProjectResourceDirectoryPreference);
+}
+
 export type ResumeStatus =
   | "ready"
   | "missing_session_id"
@@ -48,6 +55,7 @@ export interface AppConfig {
   tools: Record<ToolId, { command: string; sessionSources?: string[] }>;
   terminal: { mode: TerminalMode };
   skillhub: { rootDir: string };
+  projectResources: { directoryPreference: ProjectResourceDirectoryPreference };
 }
 
 export interface Project {
@@ -183,6 +191,80 @@ export interface CliHubCustomInstallCommandInput {
   displayName?: string | null;
   commandName?: string | null;
   installCommand: string;
+}
+
+export type ProjectCliActionExecutionMode = "inline" | "terminal";
+export type ProjectCliActionAvailabilityState = "available" | "unavailable" | "unknown";
+export type ProjectCliActionRunStatus = "success" | "failed" | "launched";
+
+export interface ProjectCliActionAvailability {
+  state: ProjectCliActionAvailabilityState;
+  reason: string | null;
+  cliHubCliId: string;
+  cliHubAvailabilityState: CliHubAvailabilityState | null;
+}
+
+export interface ProjectCliAction {
+  actionId: string;
+  cliId: string;
+  cliDisplayName: string;
+  label: string;
+  command: string;
+  args: string[];
+  commandText: string;
+  cwd: string;
+  cwdPolicy: "target-root";
+  executionMode: ProjectCliActionExecutionMode;
+  writesProject: boolean;
+  requiresConfirmation: boolean;
+  affectedPaths: string[];
+  availability: ProjectCliActionAvailability;
+}
+
+export interface ProjectCliCommand {
+  cliId: string;
+  displayName: string;
+  kind: Extract<CliHubCliKind, "function" | "dependency">;
+  command: string;
+  commandText: string;
+  cwd: string;
+  localPath: string | null;
+  resolvedPaths: string[];
+  version: string | null;
+}
+
+export interface ProjectCliActionGroup {
+  cliId: string;
+  displayName: string;
+  availability: ProjectCliActionAvailability;
+  commands?: ProjectCliCommand[];
+  actions: ProjectCliAction[];
+}
+
+export interface ProjectCliActionState {
+  projectId: string;
+  targetRootPath: string;
+  groups: ProjectCliActionGroup[];
+}
+
+export interface ProjectCliActionRunResult {
+  projectId: string;
+  targetRootPath: string;
+  actionId: string;
+  cliId: string;
+  label: string;
+  command: string;
+  args: string[];
+  commandText: string;
+  cwd: string;
+  executionMode: ProjectCliActionExecutionMode;
+  status: ProjectCliActionRunStatus;
+  startedAt: string;
+  completedAt: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  launch: LaunchResponse | null;
 }
 
 export type SkillHubSourceType = "local" | "github" | "plugin";
@@ -459,6 +541,7 @@ export type PluginHubPluginKind = "source" | "custom";
 export type PluginHubComponentType = "skill" | "agent" | "mcp" | "hook";
 export type PluginHubHarnessSupport = "native" | "component-only" | "unsupported" | "planned";
 export type PluginHubSourceDeleteMode = "delete-custom-plugins" | "remove-custom-components";
+export type PluginHubPrivateFileRole = "private-file" | "native-manifest" | "native-command" | "native-hook" | "native-support";
 
 export interface PluginHubSource {
   id: string;
@@ -496,6 +579,7 @@ export interface PluginHubPrivateFile {
   contentPath: string;
   contentHash: string;
   required: boolean;
+  role?: PluginHubPrivateFileRole;
 }
 
 export interface PluginHubPlugin {

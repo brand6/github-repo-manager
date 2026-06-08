@@ -209,12 +209,13 @@ export function SkillHubSkillRow({
 }) {
   const canDelete = Boolean(onDeleteSkill) && canDeleteSkillHubSkill(skill);
   const hasActions = Boolean(onOpenSkill) || canDelete;
+  const displayName = skillHubSkillDisplayName(skill);
   return (
     <details className={["skillhub-skill-row", className].filter(Boolean).join(" ")}>
       <summary>
         {summaryPrefix}
-        <span className="skillhub-skill-title">{skill.folderName}</span>
-        {skill.skillName && skill.skillName !== skill.folderName ? <small>{skill.skillName}</small> : null}
+        <span className="skillhub-skill-title">{displayName}</span>
+        {displayName !== skill.folderName ? <small>{skill.folderName}</small> : null}
         {summaryExtra}
       </summary>
       <div className="skillhub-skill-body">
@@ -275,6 +276,10 @@ function skillHubSourceSummary(source: SkillHubSource): SkillHubSourceSummary {
     type: source.type,
     label: source.label
   };
+}
+
+function skillHubSkillDisplayName(skill: Pick<SkillHubSkill, "folderName" | "skillName">): string {
+  return skill.skillName?.trim() || skill.folderName;
 }
 
 function canDeleteSkillHubSkill(skill: SkillHubSkill): boolean {
@@ -429,6 +434,7 @@ function ProjectSkillTabContent({
                       const checked = supportedEnabled.length > 0 && supportedEnabled.every((toolId) => active.includes(toolId));
                       const indeterminate = supportedEnabled.some((toolId) => active.includes(toolId)) && !checked;
                       const pluginOwned = pluginOwnedSkillIds.has(skill.id);
+                      const displayName = skillHubSkillDisplayName(skill);
                       return (
                         <details className="skill-target-row" key={skill.id}>
                           <summary>
@@ -438,7 +444,8 @@ function ProjectSkillTabContent({
                               disabled={busy || supportedEnabled.length === 0 || pluginOwned}
                               onChange={(next) => onUpdateSkill(skill.id, next ? supportedEnabled : [])}
                             />
-                            <span>{skill.folderName}</span>
+                            <span>{displayName}</span>
+                            {displayName !== skill.folderName ? <small>{skill.folderName}</small> : null}
                             {pluginOwned ? <span className="metric-pill warning">Plugin managed</span> : null}
                           </summary>
                           <p>{skill.description ?? skill.skillName ?? "无描述"}</p>

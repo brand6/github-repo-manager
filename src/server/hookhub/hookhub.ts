@@ -348,6 +348,12 @@ export function isHookHubSupportedToolId(value: unknown): value is HookHubSuppor
   return value === "claude" || value === "codex" || value === "qwen" || value === "qoder";
 }
 
+export function convertHookPayloadForTool(payload: unknown, sourceToolId: HookHubSupportedToolId, targetToolId: HookHubSupportedToolId): unknown | null {
+  if (sourceToolId === targetToolId) return payload;
+  if (sourceToolId === "claude" && ["codex", "qwen", "qoder"].includes(targetToolId)) return convertClaudeHookPayloadToSimpleTool(payload);
+  return null;
+}
+
 function normalizeSuiteInput(
   input: HookHubSuiteInput,
   suiteId: string,
@@ -400,6 +406,47 @@ function suiteInputWithPayload(
     ...(input.requiredEnv !== undefined ? { requiredEnv: input.requiredEnv } : {}),
     payloads: { [toolId]: hooks }
   };
+}
+
+function convertClaudeHookPayloadToSimpleTool(payload: unknown): unknown | null {
+  if (!isRecord(payload)) return null;
+  const converted: Record<string, unknown[]> = {};
+  for (const [eventName, rules] of Object.entries(payload)) {
+    if (!Array.isArray(rules)) continue;
+    const targetEvent = simpleHookEventName(eventName);
+    const commands: unknown[] = [];
+    for (const rule of rules) {
+      if (!isRecord(rule)) continue;
+      const matcher = typeof rule.matcher === "string" && rule.matcher.trim() ? rule.matcher.trim() : null;
+      const hooks = Array.isArray(rule.hooks) ? rule.hooks : [];
+      for (const hook of hooks) {
+        if (!isRecord(hook)) continue;
+        const command = typeof hook.command === "string" && hook.command.trim() ? hook.command.trim() : null;
+        if (!command) continue;
+        commands.push({
+          ...(matcher ? { matcher } : {}),
+          command,
+          ...(typeof hook.timeout === "number" ? { timeout: hook.timeout } : {}),
+          ...(typeof hook.async === "boolean" ? { async: hook.async } : {})
+        });
+      }
+    }
+    if (commands.length > 0) converted[targetEvent] = [...(converted[targetEvent] ?? []), ...commands];
+  }
+  return Object.keys(converted).length > 0 ? converted : null;
+}
+
+function simpleHookEventName(eventName: string): string {
+  const known: Record<string, string> = {
+    PreToolUse: "pre",
+    PostToolUse: "post",
+    SessionStart: "session_start",
+    Stop: "stop",
+    Notification: "notification",
+    UserPromptSubmit: "user_prompt_submit",
+    SubagentStop: "subagent_stop"
+  };
+  return known[eventName] ?? eventName.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
 }
 
 function ensureUniqueSuiteName(database: AppDatabase, name: string, suiteId: string | null = null): void {

@@ -54,19 +54,23 @@ describe("PluginHub", () => {
       pluginCount: 1
     });
     expect(source?.componentCount).toBeGreaterThan(0);
-    expect(source?.privateFileCount).toBeGreaterThan(90);
+    expect(source?.privateFileCount).toBeGreaterThan(10);
+    expect(source?.privateFileCount).toBeLessThan(25);
     expect(plugin).toMatchObject({ displayName: "Superpowers", sourceId: "pluginhub-source-superpowers" });
     expect(plugin?.componentRefs.length).toBeGreaterThan(0);
-    expect(plugin?.privateFiles.map((file) => file.sourceRelativePath)).toEqual(
+    const superpowersPrivatePaths = plugin?.privateFiles.map((file) => file.sourceRelativePath) ?? [];
+    expect(superpowersPrivatePaths).toEqual(
       expect.arrayContaining([
         "superpowers/.claude-plugin/plugin.json",
         "superpowers/.cursor-plugin/plugin.json",
         "superpowers/.opencode/plugins/superpowers.js",
-        "superpowers/docs/README.opencode.md",
         "superpowers/hooks/hooks.json",
-        "superpowers/scripts/sync-to-codex-plugin.sh"
+        "superpowers/package.json"
       ])
     );
+    expect(superpowersPrivatePaths.some((item) => item.startsWith("superpowers/tests/"))).toBe(false);
+    expect(superpowersPrivatePaths.some((item) => item.startsWith("superpowers/.github/"))).toBe(false);
+    expect(superpowersPrivatePaths.some((item) => item.startsWith("superpowers/docs/"))).toBe(false);
     expect(listed.skills.some((skill) => skill.folderName === "using-superpowers")).toBe(true);
     expect(cavemanSource).toMatchObject({
       id: "pluginhub-source-caveman",
@@ -192,13 +196,29 @@ describe("PluginHub", () => {
     const config = configFixture(directory);
     const library = path.join(directory, "wshobson-agents");
     writePlugin(path.join(library, "plugins", "python-development"), "python-development", [["review", "Python review"]], {
-      "commands/test.md": "run pytest"
+      "commands/test.md": "run pytest",
+      ".claude-plugin/plugin.json": JSON.stringify({ name: "python-development" }),
+      ".cursor-plugin/plugin.json": JSON.stringify({ name: "python-development" }),
+      ".opencode/plugins/python-development.js": "export default {};",
+      "GEMINI.md": "Gemini instructions",
+      "hooks/hooks.json": JSON.stringify({
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [{ type: "command", command: '"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start' }]
+            }
+          ]
+        }
+      }),
+      "hooks/run-hook.cmd": "echo hook"
     });
     writePlugin(path.join(library, "plugins", "frontend"), "frontend", [["lint", "Frontend lint"]]);
 
     const imported = importPluginHubLocalSource(db, config, directory, library);
 
     expect(imported.source).toMatchObject({ kind: "library", label: "wshobson-agents", pluginCount: 2 });
+    expect(imported.source.resolvedPath.toLowerCase()).toBe(path.join(directory, "pluginhub", "sources", imported.source.id, "snapshot").toLowerCase());
+    expect(imported.source.resolvedPath.toLowerCase()).not.toBe(library.toLowerCase());
     expect(imported.plugins.map((plugin) => plugin.name)).toEqual(["frontend", "python-development"]);
     expect(imported.importedSkills.map((skill) => skill.sourceId)).toEqual([imported.source.id, imported.source.id]);
     expect(imported.importedSkills.map((skill) => skill.sourceType)).toEqual(["plugin", "plugin"]);
@@ -209,9 +229,19 @@ describe("PluginHub", () => {
     expect(db.getSkillHubSource(imported.source.id)).toMatchObject({ type: "plugin", label: "wshobson-agents" });
     expect(() => previewDeleteSkillHubSkill(db, imported.importedSkills[0].id)).toThrow("Plugin 技能不能在 SkillHub 删除");
     expect(() => deleteSkillHubSkill(db, imported.importedSkills[0].id)).toThrow("Plugin 技能不能在 SkillHub 删除");
-    expect(imported.plugins.find((plugin) => plugin.name === "python-development")?.privateFiles.map((file) => file.sourceRelativePath)).toEqual(
+    const pythonPlugin = imported.plugins.find((plugin) => plugin.name === "python-development");
+    const commandFile = pythonPlugin?.privateFiles.find((file) => file.sourceRelativePath.endsWith("commands/test.md"));
+    expect(pythonPlugin?.privateFiles.map((file) => file.sourceRelativePath)).toEqual(
       expect.arrayContaining(["plugins/python-development/.codex-plugin/plugin.json", "plugins/python-development/commands/test.md"])
     );
+    expect(commandFile?.role).toBe("native-command");
+    expect(commandFile?.contentPath.toLowerCase()).toBe(path.join(imported.source.resolvedPath, "plugins", "python-development", "commands", "test.md").toLowerCase());
+    expect(pythonPlugin?.privateFiles.find((file) => file.sourceRelativePath.endsWith(".claude-plugin/plugin.json"))?.role).toBe("native-manifest");
+    expect(pythonPlugin?.privateFiles.find((file) => file.sourceRelativePath.endsWith("hooks/hooks.json"))?.role).toBe("native-hook");
+    expect(pythonPlugin?.harnessSupport).toMatchObject({ codex: "native", claude: "native", cursor: "planned", opencode: "planned" });
+    expect(pythonPlugin?.harnessSupport.qwen ?? "unsupported").toBe("unsupported");
+    fs.writeFileSync(path.join(library, "plugins", "python-development", "commands", "test.md"), "changed outside Center Library", "utf8");
+    expect(fs.readFileSync(commandFile?.contentPath ?? "", "utf8")).toBe("run pytest");
     expect(db.listSkillHubSkills().map((skill) => skill.folderName)).toEqual(["lint", "review"]);
     const duplicateImport = importPluginHubLocalSource(db, config, directory, library);
     expect(duplicateImport.source.id).toBe(imported.source.id);
@@ -313,10 +343,18 @@ describe("PluginHub", () => {
     const commandPath = path.join(packageRoot, "commands", "test.md");
     const marketplacePath = path.join(projectRoot, ".agents", "plugins", "marketplace.json");
     const manifestPath = path.join(packageRoot, ".codex-plugin", "plugin.json");
+    const hookPath = path.join(packageRoot, "hooks", "hooks.json");
+    const hookScriptPath = path.join(packageRoot, "hooks", "run-hook.cmd");
 
     expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 1, existingComponentCount: 0, privateFileCount: 1 } });
     expect(fs.existsSync(path.join(skillPath, "SKILL.md"))).toBe(true);
     expect(fs.existsSync(commandPath)).toBe(false);
+    expect(fs.existsSync(hookPath)).toBe(false);
+    expect(fs.existsSync(hookScriptPath)).toBe(false);
+    expect(fs.existsSync(path.join(packageRoot, ".claude-plugin", "plugin.json"))).toBe(false);
+    expect(fs.existsSync(path.join(packageRoot, ".cursor-plugin", "plugin.json"))).toBe(false);
+    expect(fs.existsSync(path.join(packageRoot, ".opencode", "plugins", "python-development.js"))).toBe(false);
+    expect(fs.existsSync(path.join(packageRoot, "GEMINI.md"))).toBe(false);
     expect(JSON.parse(fs.readFileSync(manifestPath, "utf8"))).toMatchObject({ name: "python-development", skills: "./skills/" });
     expect(JSON.parse(fs.readFileSync(marketplacePath, "utf8")).plugins).toEqual([
       expect.objectContaining({ name: "python-development", source: { source: "local", path: "./plugins/python-development" } })
@@ -405,6 +443,9 @@ describe("PluginHub", () => {
         null,
         2
       ),
+      ".cursor-plugin/plugin.json": JSON.stringify({ name: "caveman" }),
+      ".opencode/plugins/caveman.js": "export default {};",
+      "GEMINI.md": "Gemini instructions",
       "src/hooks/caveman-activate.js": "process.stdout.write('caveman');\n"
     });
     const plugin = importPluginHubLocalSource(db, config, directory, pluginRoot).plugins[0];
@@ -447,6 +488,10 @@ describe("PluginHub", () => {
     expect(projectSettings.extraKnownMarketplaces.pluginhub.source).toEqual({ source: "directory", path: "./.pluginhub/claude-marketplace" });
     expect(hookCommand).toContain("${CLAUDE_PLUGIN_ROOT}/src/hooks/caveman-activate.js");
     expect(fs.readFileSync(path.join(packageRoot, "src", "hooks", "caveman-activate.js"), "utf8")).toContain("caveman");
+    expect(fs.existsSync(path.join(packageRoot, ".codex-plugin", "plugin.json"))).toBe(false);
+    expect(fs.existsSync(path.join(packageRoot, ".cursor-plugin", "plugin.json"))).toBe(false);
+    expect(fs.existsSync(path.join(packageRoot, ".opencode", "plugins", "caveman.js"))).toBe(false);
+    expect(fs.existsSync(path.join(packageRoot, "GEMINI.md"))).toBe(false);
     expect(installed.binding?.privateFileOwnership.some((item) => item.kind === "native-plugin")).toBe(true);
     expect(listPluginHub(db).hookSuites).toEqual([]);
 
@@ -454,6 +499,58 @@ describe("PluginHub", () => {
     const afterUninstall = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
     expect(afterUninstall.hooks.PreToolUse[0].hooks[0].command).toBe("echo local");
     expect(fs.existsSync(packageRoot)).toBe(false);
+    db.close();
+  });
+
+  it("converts plugin-native Claude hooks into Codex project hooks during Codex install", () => {
+    directory = testDir("pluginhub-convert-claude-hooks-to-codex");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const pluginRoot = path.join(directory, "claude-only");
+    fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, "src", "hooks"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+      JSON.stringify(
+        {
+          name: "claude-only",
+          description: "Claude hook plugin",
+          hooks: {
+            SessionStart: [
+              {
+                matcher: "startup",
+                hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/src/hooks/start.js"', timeout: 5 }]
+              }
+            ]
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    fs.writeFileSync(path.join(pluginRoot, "src", "hooks", "start.js"), "process.stdout.write('start');\n", "utf8");
+    const plugin = importPluginHubLocalSource(db, config, directory, pluginRoot).plugins[0];
+    expect(plugin.harnessSupport.codex).toBe("native");
+
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["codex"]);
+
+    const installed = installProjectPlugin(db, project, plugin.id, "codex");
+    const packageRoot = path.join(projectRoot, "plugins", "claude-only");
+    const hooksConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".codex", "hooks.json"), "utf8"));
+    const command = hooksConfig.session_start[0].command as string;
+
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { privateFileCount: 1 } });
+    expect(command.replace(/\\/g, "/")).toContain(path.join(packageRoot, "src", "hooks", "start.js").replace(/\\/g, "/"));
+    expect(hooksConfig.session_start[0]).toMatchObject({ matcher: "startup", timeout: 5 });
+    expect(fs.existsSync(path.join(packageRoot, "src", "hooks", "start.js"))).toBe(true);
+    expect(fs.existsSync(path.join(packageRoot, ".claude-plugin", "plugin.json"))).toBe(false);
+    expect(fs.existsSync(path.join(packageRoot, ".codex-plugin", "plugin.json"))).toBe(true);
+    expect(installed.binding?.privateFileOwnership.some((item) => item.kind === "hook")).toBe(true);
     db.close();
   });
 
@@ -621,6 +718,28 @@ describe("PluginHub", () => {
     expect(overwritten.backups[0]).toMatchObject({ hub: "PluginHub", targetResourceType: "native-plugin", originalPath: packageRoot });
     expect(fs.existsSync(overwritten.backups[0].metadataPath)).toBe(true);
     expect(fs.existsSync(path.join(packageRoot, "skills", "review", "SKILL.md"))).toBe(true);
+    fs.writeFileSync(path.join(packageRoot, "local-drift.txt"), "local edit", "utf8");
+
+    const driftPreview = syncProjectPluginBinding(db, project, overwritten.binding?.id ?? "");
+    expect(driftPreview).toMatchObject({ requiresConfirmation: true, binding: null });
+    expect(driftPreview.preflight).toEqual([
+      expect.objectContaining({
+        targetResourceType: "native-plugin",
+        existingOwnerType: "local",
+        overwriteReason: "PluginHub 管理的原生 plugin package 已被本地修改",
+        backupRequired: true
+      })
+    ]);
+    const blockedUninstall = uninstallProjectPluginBinding(db, project, overwritten.binding?.id ?? "");
+    expect(blockedUninstall).toMatchObject({ blocked: true, binding: expect.any(Object) });
+    expect(fs.existsSync(path.join(packageRoot, "local-drift.txt"))).toBe(true);
+
+    const resynced = syncProjectPluginBinding(db, project, overwritten.binding?.id ?? "", { conflictMode: "overwrite" });
+    expect(resynced.backups).toEqual([expect.objectContaining({ targetResourceType: "native-plugin", originalPath: packageRoot })]);
+    expect(fs.existsSync(path.join(packageRoot, "local-drift.txt"))).toBe(false);
+    const uninstalled = uninstallProjectPluginBinding(db, project, overwritten.binding?.id ?? "");
+    expect(uninstalled).toMatchObject({ blocked: false, binding: null });
+    expect(fs.existsSync(packageRoot)).toBe(false);
     db.close();
   });
 

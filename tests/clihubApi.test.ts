@@ -61,6 +61,13 @@ describe("CliHub API", () => {
       .set("x-local-api-token", context.token)
       .send({ installCommand: "internal-cli" })
       .expect(400);
+    const customCommand = await request(app)
+      .post("/api/clihub/custom/install-command")
+      .set("x-local-api-token", context.token)
+      .send({ installCommand: "npm install -g internal-cli" })
+      .expect(201);
+    expect(customCommand.body).toMatchObject({ sourceState: "install-command", commandNames: ["internal"] });
+    expect(runner.executed).toContain("npm install -g internal-cli");
 
     const tools = await request(app).get("/api/tools/status").set("x-local-api-token", context.token).expect(200);
     expect(tools.body.map((tool: { toolId: string }) => tool.toolId)).not.toContain(customLocal.body.cliId);

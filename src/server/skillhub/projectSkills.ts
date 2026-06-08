@@ -14,16 +14,35 @@ import type {
 import { toolIds } from "../../shared/types.js";
 import type { AppDatabase } from "../storage/database.js";
 import { isPathInsideOrEqual, normalizeFsPath } from "../core/pathUtils.js";
-import { projectConfigurableToolStatuses, toolAdapters } from "../tools/adapters.js";
+import { projectConfigurableToolStatuses, projectSkillDirectoryOptions, toolAdapters } from "../tools/adapters.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "./links.js";
 
 const allToolIds: ToolId[] = [...toolIds];
+
+interface ProjectSkillDirectoryTarget {
+  toolId: ToolId;
+  directory: string;
+  normalizedDirectory: string;
+  kind: "private" | "public";
+  preferred: boolean;
+  sharedCandidate: boolean;
+}
+
+interface ProjectSkillDirectoryGroup {
+  directory: string;
+  normalizedDirectory: string;
+  toolIds: ToolId[];
+  shared: boolean;
+}
 
 export function listProjectToolTargets(database: AppDatabase, project: Project, config?: AppConfig): ProjectToolTarget[] {
   ensureProjectToolTargets(database, project, config);
   const stored = new Map(database.listStoredProjectToolTargets(project.id).map((target) => [target.toolId, target]));
   return projectTargetToolIds(config).map((toolId) => {
-    const adapterTarget = toolAdapters[toolId].skillTarget(project.rootPath);
+    const adapterTarget = toolAdapters[toolId].skillTarget(
+      project.rootPath,
+      config ? { directoryPreference: config.projectResources.directoryPreference } : undefined
+    );
     const row = stored.get(toolId);
     return {
       projectId: project.id,
@@ -48,12 +67,13 @@ export function unavailableProjectToolIds(config: AppConfig, toolIds: ToolId[]):
   return uniqueToolIds(toolIds).filter((toolId) => !allowed.has(toolId));
 }
 
-export function listProjectSkillTargetsState(database: AppDatabase, project: Project): ProjectSkillTargetsState {
-  const toolTargets = listProjectToolTargets(database, project);
+export function listProjectSkillTargetsState(database: AppDatabase, project: Project, config?: AppConfig): ProjectSkillTargetsState {
+  const toolTargets = listProjectToolTargets(database, project, config);
+  const directoryTargets = projectSkillDirectoryTargets(project, toolTargets, config);
   return {
     projectId: project.id,
     toolTargets,
-    skillTargets: scopedProjectSkillTargets(database, project.id, toolTargets),
+    skillTargets: expandSharedProjectSkillTargets(scopedProjectSkillTargets(database, project.id, directoryTargets), directoryTargets),
     skills: database.listSkillHubSkills()
   };
 }
@@ -63,31 +83,25 @@ export function setProjectSkillTargets(
   project: Project,
   skillId: string,
   toolIds: ToolId[],
-  options: { replaceConflicts?: boolean } = {}
+  options: { replaceConflicts?: boolean } = {},
+  config?: AppConfig
 ): ProjectSkillUpdateResult {
   const skill = database.getSkillHubSkill(skillId);
   if (!skill) throw new Error("SkillHub skill not found");
-  const targetIds = new Set(uniqueToolIds(toolIds));
-  const toolTargetList = listProjectToolTargets(database, project);
+  const requestedToolIds = new Set(uniqueToolIds(toolIds));
+  const toolTargetList = listProjectToolTargets(database, project, config);
   const toolTargets = new Map(toolTargetList.map((target) => [target.toolId, target]));
-  const currentTargets = scopedProjectSkillTargets(database, project.id, toolTargetList).filter((target) => target.skillId === skillId);
+  const directoryTargets = projectSkillDirectoryTargets(project, toolTargetList, config);
+  const directoryGroups = projectSkillDirectoryGroups(directoryTargets);
+  const directoryGroupsByDirectory = new Map(directoryGroups.map((group) => [group.normalizedDirectory, group]));
+  const currentTargets = scopedProjectSkillTargets(database, project.id, directoryTargets).filter((target) => target.skillId === skillId);
   const removed: ProjectSkillTarget[] = [];
   const targets: ProjectSkillTarget[] = [];
   const conflicts: ProjectSkillConflict[] = [];
   const failures: ProjectSkillLinkFailure[] = [];
+  const validRequestedToolIds = new Set<ToolId>();
 
-  for (const current of currentTargets) {
-    if (targetIds.has(current.toolId)) continue;
-    const removal = removeDirectoryLink(current.linkPath);
-    if (!removal.reason || removal.missing) {
-      database.deleteProjectSkillTarget(current.projectId, current.toolId, current.skillId, current.linkPath);
-      removed.push(current);
-    } else {
-      failures.push(failure(current.projectId, current.toolId, current.skillId, current.linkPath, current.targetPath, removal.reason));
-    }
-  }
-
-  for (const toolId of targetIds) {
+  for (const toolId of requestedToolIds) {
     const toolTarget = toolTargets.get(toolId);
     if (!toolTarget?.enabled) {
       failures.push(failure(project.id, toolId, skill.id, "", skill.libraryPath, "该工具未在项目中启用"));
@@ -97,57 +111,72 @@ export function setProjectSkillTargets(
       failures.push(failure(project.id, toolId, skill.id, "", skill.libraryPath, toolTarget?.reason ?? "该工具暂不支持项目技能目录"));
       continue;
     }
+    validRequestedToolIds.add(toolId);
+  }
 
-    const linkPath = path.join(toolTarget.skillDirectory, skill.folderName);
-    const existingByLink = database.getProjectSkillTargetByLinkPath(project.id, toolId, linkPath);
-    if (existingByLink && existingByLink.skillId !== skill.id) {
-      const existingSkill = database.getSkillHubSkill(existingByLink.skillId);
-      conflicts.push({ toolId, linkPath, existingSkill, requestedSkill: skill });
-      if (isPluginOwnedSkillTarget(database, project.id, toolId, linkPath, existingByLink.skillId)) {
-        failures.push(failure(project.id, toolId, skill.id, linkPath, skill.libraryPath, "该目标由项目 Plugin 管理，请从 Plugin 入口卸载或同步"));
+  const sharedRemovalDirectories = sharedDirectoriesToRemove(currentTargets, directoryGroups, validRequestedToolIds, requestedToolIds.size === 0);
+  const desiredTargets = desiredProjectSkillTargets(project, skill.id, skill.folderName, skill.libraryPath, validRequestedToolIds, toolTargets, directoryGroupsByDirectory, sharedRemovalDirectories);
+  keepRequestedPrivateTargets(currentTargets, desiredTargets, directoryGroupsByDirectory, validRequestedToolIds, requestedToolIds.size === 0);
+  keepPrivateTargetsAfterSharedRemoval(currentTargets, desiredTargets, directoryGroupsByDirectory, sharedRemovalDirectories, requestedToolIds.size === 0);
+  removeUndesiredProjectSkillTargets(database, currentTargets, desiredTargets, removed, failures);
+
+  const blockedLinks = new Set<string>();
+  for (const desired of desiredTargets.values()) {
+    const linkKey = normalizeFsPath(desired.linkPath);
+    if (blockedLinks.has(linkKey)) continue;
+    const linkConflicts = database
+      .listProjectSkillTargets(project.id)
+      .filter((target) => normalizeFsPath(target.linkPath) === linkKey && target.skillId !== skill.id);
+    if (linkConflicts.length > 0) {
+      const existingSkill = database.getSkillHubSkill(linkConflicts[0]!.skillId);
+      conflicts.push({ toolId: desired.toolId, linkPath: desired.linkPath, existingSkill, requestedSkill: skill });
+      if (linkConflicts.some((target) => isPluginOwnedSkillTarget(database, project.id, target.toolId, desired.linkPath, target.skillId))) {
+        failures.push(failure(project.id, desired.toolId, skill.id, desired.linkPath, skill.libraryPath, "该目标由项目 Plugin 管理，请从 Plugin 入口卸载或同步"));
+        blockedLinks.add(linkKey);
         continue;
       }
-      if (!options.replaceConflicts) continue;
-      const removal = removeDirectoryLink(existingByLink.linkPath);
+      if (!options.replaceConflicts) {
+        blockedLinks.add(linkKey);
+        continue;
+      }
+      const removal = removeDirectoryLink(desired.linkPath);
       if (removal.reason && !removal.missing) {
-        failures.push(failure(project.id, toolId, skill.id, linkPath, skill.libraryPath, removal.reason));
+        failures.push(failure(project.id, desired.toolId, skill.id, desired.linkPath, skill.libraryPath, removal.reason));
+        blockedLinks.add(linkKey);
         continue;
       }
-      database.deleteProjectSkillTargetByLinkPath(project.id, toolId, linkPath);
+      for (const conflict of linkConflicts) {
+        database.deleteProjectSkillTarget(conflict.projectId, conflict.toolId, conflict.skillId, conflict.linkPath);
+      }
     }
 
-    if (pathExists(linkPath)) {
-      if (!linkPointsTo(linkPath, skill.libraryPath)) {
-        if (existingByLink && isPluginOwnedSkillTarget(database, project.id, toolId, linkPath, existingByLink.skillId)) {
-          failures.push(failure(project.id, toolId, skill.id, linkPath, skill.libraryPath, "该目标由项目 Plugin 管理，请从 Plugin 入口卸载或同步"));
-          continue;
-        }
+    if (pathExists(desired.linkPath)) {
+      if (!linkPointsTo(desired.linkPath, skill.libraryPath)) {
         if (!options.replaceConflicts) {
-          conflicts.push({ toolId, linkPath, existingSkill: existingByLink ? database.getSkillHubSkill(existingByLink.skillId) : null, requestedSkill: skill });
+          conflicts.push({ toolId: desired.toolId, linkPath: desired.linkPath, existingSkill: null, requestedSkill: skill });
+          blockedLinks.add(linkKey);
           continue;
         }
-        const removal = removeDirectoryLink(linkPath);
+        const removal = removeDirectoryLink(desired.linkPath);
         if (removal.reason && !removal.missing) {
-          failures.push(failure(project.id, toolId, skill.id, linkPath, skill.libraryPath, removal.reason));
+          failures.push(failure(project.id, desired.toolId, skill.id, desired.linkPath, skill.libraryPath, removal.reason));
+          blockedLinks.add(linkKey);
           continue;
         }
       }
     } else {
       try {
-        createDirectoryLink(skill.libraryPath, linkPath);
+        createDirectoryLink(skill.libraryPath, desired.linkPath);
       } catch (error) {
-        failures.push(failure(project.id, toolId, skill.id, linkPath, skill.libraryPath, error instanceof Error ? error.message : "link 创建失败"));
+        failures.push(failure(project.id, desired.toolId, skill.id, desired.linkPath, skill.libraryPath, error instanceof Error ? error.message : "link 创建失败"));
+        blockedLinks.add(linkKey);
         continue;
       }
     }
 
     targets.push(
       database.upsertProjectSkillTarget({
-        projectId: project.id,
-        toolId,
-        skillId: skill.id,
-        linkPath,
-        targetPath: skill.libraryPath
+        ...desired
       })
     );
   }
@@ -163,14 +192,215 @@ export function setProjectSkillTargets(
   };
 }
 
-function scopedProjectSkillTargets(database: AppDatabase, projectId: string, toolTargets: ProjectToolTarget[]): ProjectSkillTarget[] {
-  const skillDirectories = toolTargets
-    .filter((target) => target.supported && target.skillDirectory)
-    .map((target) => target.skillDirectory as string);
+function scopedProjectSkillTargets(database: AppDatabase, projectId: string, directoryTargets: ProjectSkillDirectoryTarget[]): ProjectSkillTarget[] {
+  const skillDirectories = uniqueStrings(directoryTargets.map((target) => target.directory));
   if (skillDirectories.length === 0) return [];
   return database.listProjectSkillTargets(projectId).filter((target) =>
     skillDirectories.some((skillDirectory) => isPathInsideOrEqual(skillDirectory, target.linkPath))
   );
+}
+
+function projectSkillDirectoryTargets(project: Project, toolTargets: ProjectToolTarget[], config?: AppConfig): ProjectSkillDirectoryTarget[] {
+  const targets: ProjectSkillDirectoryTarget[] = [];
+  const publicGrouping = config?.projectResources.directoryPreference === "public";
+  for (const toolTarget of toolTargets) {
+    if (!toolTarget.enabled || !toolTarget.supported || !toolTarget.skillDirectory) continue;
+    const preferredDirectory = normalizeFsPath(toolTarget.skillDirectory);
+    for (const option of projectSkillDirectoryOptions(toolTarget.toolId, project.rootPath)) {
+      targets.push({
+        toolId: toolTarget.toolId,
+        directory: option.directory,
+        normalizedDirectory: normalizeFsPath(option.directory),
+        kind: option.kind,
+        preferred: normalizeFsPath(option.directory) === preferredDirectory,
+        sharedCandidate: publicGrouping && option.kind === "public"
+      });
+    }
+  }
+  return uniqueDirectoryTargets(targets);
+}
+
+function projectSkillDirectoryGroups(directoryTargets: ProjectSkillDirectoryTarget[]): ProjectSkillDirectoryGroup[] {
+  const grouped = new Map<string, ProjectSkillDirectoryGroup & { publicCount: number }>();
+  for (const target of directoryTargets) {
+    const group = grouped.get(target.normalizedDirectory) ?? {
+      directory: target.directory,
+      normalizedDirectory: target.normalizedDirectory,
+      toolIds: [],
+      shared: false,
+      publicCount: 0
+    };
+    if (!group.toolIds.includes(target.toolId)) group.toolIds.push(target.toolId);
+    if (target.sharedCandidate) group.publicCount += 1;
+    grouped.set(target.normalizedDirectory, group);
+  }
+  return [...grouped.values()].map((group) => ({
+    directory: group.directory,
+    normalizedDirectory: group.normalizedDirectory,
+    toolIds: group.toolIds.sort(),
+    shared: group.toolIds.length > 1 && group.publicCount > 0
+  }));
+}
+
+function expandSharedProjectSkillTargets(storedTargets: ProjectSkillTarget[], directoryTargets: ProjectSkillDirectoryTarget[]): ProjectSkillTarget[] {
+  const groupsByDirectory = new Map(projectSkillDirectoryGroups(directoryTargets).map((group) => [group.normalizedDirectory, group]));
+  const expanded = new Map(storedTargets.map((target) => [projectSkillTargetKey(target.toolId, target.skillId, target.linkPath), target]));
+  for (const target of storedTargets) {
+    const group = groupsByDirectory.get(normalizeFsPath(path.dirname(target.linkPath)));
+    if (!group?.shared) continue;
+    for (const toolId of group.toolIds) {
+      const key = projectSkillTargetKey(toolId, target.skillId, target.linkPath);
+      if (!expanded.has(key)) expanded.set(key, { ...target, toolId });
+    }
+  }
+  return [...expanded.values()].sort((left, right) => left.toolId.localeCompare(right.toolId) || left.linkPath.localeCompare(right.linkPath));
+}
+
+function sharedDirectoriesToRemove(
+  currentTargets: ProjectSkillTarget[],
+  directoryGroups: ProjectSkillDirectoryGroup[],
+  requestedToolIds: Set<ToolId>,
+  clearAll: boolean
+): Set<string> {
+  const remove = new Set<string>();
+  const currentDirectories = new Set(currentTargets.map((target) => normalizeFsPath(path.dirname(target.linkPath))));
+  for (const group of directoryGroups) {
+    if (!group.shared || !currentDirectories.has(group.normalizedDirectory)) continue;
+    const requestedCount = group.toolIds.filter((toolId) => requestedToolIds.has(toolId)).length;
+    if (clearAll || requestedCount < group.toolIds.length) remove.add(group.normalizedDirectory);
+  }
+  return remove;
+}
+
+function desiredProjectSkillTargets(
+  project: Project,
+  skillId: string,
+  folderName: string,
+  targetPath: string,
+  requestedToolIds: Set<ToolId>,
+  toolTargets: Map<ToolId, ProjectToolTarget>,
+  directoryGroupsByDirectory: Map<string, ProjectSkillDirectoryGroup>,
+  sharedRemovalDirectories: Set<string>
+): Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">> {
+  const desired = new Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">>();
+  for (const toolId of requestedToolIds) {
+    const toolTarget = toolTargets.get(toolId);
+    if (!toolTarget?.skillDirectory) continue;
+    const directory = toolTarget.skillDirectory;
+    const directoryKey = normalizeFsPath(directory);
+    const group = directoryGroupsByDirectory.get(directoryKey);
+    if (group?.shared) {
+      if (sharedRemovalDirectories.has(directoryKey)) continue;
+      for (const groupToolId of group.toolIds) {
+        addDesiredProjectSkillTarget(desired, project.id, groupToolId, skillId, path.join(group.directory, folderName), targetPath);
+      }
+      continue;
+    }
+    addDesiredProjectSkillTarget(desired, project.id, toolId, skillId, path.join(directory, folderName), targetPath);
+  }
+  return desired;
+}
+
+function keepPrivateTargetsAfterSharedRemoval(
+  currentTargets: ProjectSkillTarget[],
+  desiredTargets: Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">>,
+  directoryGroupsByDirectory: Map<string, ProjectSkillDirectoryGroup>,
+  sharedRemovalDirectories: Set<string>,
+  clearAll: boolean
+): void {
+  if (clearAll || sharedRemovalDirectories.size === 0) return;
+  for (const current of currentTargets) {
+    const directoryKey = normalizeFsPath(path.dirname(current.linkPath));
+    if (directoryGroupsByDirectory.get(directoryKey)?.shared) continue;
+    desiredTargets.set(projectSkillTargetKey(current.toolId, current.skillId, current.linkPath), {
+      projectId: current.projectId,
+      toolId: current.toolId,
+      skillId: current.skillId,
+      linkPath: current.linkPath,
+      targetPath: current.targetPath
+    });
+  }
+}
+
+function keepRequestedPrivateTargets(
+  currentTargets: ProjectSkillTarget[],
+  desiredTargets: Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">>,
+  directoryGroupsByDirectory: Map<string, ProjectSkillDirectoryGroup>,
+  requestedToolIds: Set<ToolId>,
+  clearAll: boolean
+): void {
+  if (clearAll) return;
+  for (const current of currentTargets) {
+    if (!requestedToolIds.has(current.toolId)) continue;
+    const directoryKey = normalizeFsPath(path.dirname(current.linkPath));
+    if (directoryGroupsByDirectory.get(directoryKey)?.shared) continue;
+    desiredTargets.set(projectSkillTargetKey(current.toolId, current.skillId, current.linkPath), {
+      projectId: current.projectId,
+      toolId: current.toolId,
+      skillId: current.skillId,
+      linkPath: current.linkPath,
+      targetPath: current.targetPath
+    });
+  }
+}
+
+function removeUndesiredProjectSkillTargets(
+  database: AppDatabase,
+  currentTargets: ProjectSkillTarget[],
+  desiredTargets: Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">>,
+  removed: ProjectSkillTarget[],
+  failures: ProjectSkillLinkFailure[]
+): void {
+  const desiredKeys = new Set(desiredTargets.keys());
+  const desiredLinkPaths = new Set([...desiredTargets.values()].map((target) => normalizeFsPath(target.linkPath)));
+  const rowsByLinkPath = new Map<string, ProjectSkillTarget[]>();
+  for (const current of currentTargets) {
+    if (desiredKeys.has(projectSkillTargetKey(current.toolId, current.skillId, current.linkPath))) continue;
+    const linkKey = normalizeFsPath(current.linkPath);
+    rowsByLinkPath.set(linkKey, [...(rowsByLinkPath.get(linkKey) ?? []), current]);
+  }
+
+  for (const rows of rowsByLinkPath.values()) {
+    const linkPath = rows[0]!.linkPath;
+    if (!desiredLinkPaths.has(normalizeFsPath(linkPath))) {
+      const removal = removeDirectoryLink(linkPath);
+      if (removal.reason && !removal.missing) {
+        for (const row of rows) failures.push(failure(row.projectId, row.toolId, row.skillId, row.linkPath, row.targetPath, removal.reason));
+        continue;
+      }
+    }
+    for (const row of rows) {
+      const deleted = database.deleteProjectSkillTarget(row.projectId, row.toolId, row.skillId, row.linkPath);
+      if (deleted) removed.push(deleted);
+    }
+  }
+}
+
+function addDesiredProjectSkillTarget(
+  desired: Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">>,
+  projectId: string,
+  toolId: ToolId,
+  skillId: string,
+  linkPath: string,
+  targetPath: string
+): void {
+  desired.set(projectSkillTargetKey(toolId, skillId, linkPath), { projectId, toolId, skillId, linkPath, targetPath });
+}
+
+function uniqueDirectoryTargets(targets: ProjectSkillDirectoryTarget[]): ProjectSkillDirectoryTarget[] {
+  const unique = new Map<string, ProjectSkillDirectoryTarget>();
+  for (const target of targets) {
+    unique.set(`${target.toolId}:${target.normalizedDirectory}`, target);
+  }
+  return [...unique.values()];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function projectSkillTargetKey(toolId: ToolId, skillId: string, linkPath: string): string {
+  return `${toolId}:${skillId}:${normalizeFsPath(linkPath)}`;
 }
 
 function isPluginOwnedSkillTarget(database: AppDatabase, projectId: string, toolId: ToolId, linkPath: string, skillId: string): boolean {
@@ -214,14 +444,14 @@ function inferProjectToolIds(database: AppDatabase, project: Project): Set<ToolI
 const projectTraceMap: Record<ToolId, string[]> = {
   codex: [".codex", "AGENTS.md"],
   claude: [".claude", "CLAUDE.md"],
-  cline: [],
+  cline: [".cline", ".clinerules/skills"],
   opencode: [".opencode", "OPENCODE.md"],
   kilo: [".kilo", ".kilocode", "KILO.md"],
   qwen: [".qwen", "QWEN.md"],
-  kimi: [],
+  kimi: [".kimi-code"],
   qoder: [".qoder", "QODER.md"],
-  codebuddy: [],
-  copilot: [".github/copilot-instructions.md"],
+  codebuddy: [".codebuddy"],
+  copilot: [".github/copilot-instructions.md", ".github/skills"],
   cursor: [".cursor", ".cursorrules"],
   antigravity: [".agents/mcp_config.json"],
   deepcode: [],

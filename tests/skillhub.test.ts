@@ -25,7 +25,7 @@ import {
   prepareRuleFileCreate
 } from "../src/server/skillhub/ruleSync.js";
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../src/server/skillhub/projectSkills.js";
-import type { AppConfig, Project } from "../src/shared/types.js";
+import { toolIds, type AppConfig, type Project, type ToolId } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 
 let directory: string | null = null;
@@ -281,6 +281,122 @@ describe("SkillHub", () => {
     expect(copilot).toMatchObject({ enabled: true, inferred: true });
   });
 
+  it("supports SkillHub links for all built-in project CLI skill targets", () => {
+    directory = testDir("skillhub-built-in-project-cli-targets");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    const source = path.join(directory, "source");
+    writeSkill(path.join(source, "skills", "review"), "review", "Review skill");
+    const skill = importLocalSkills(db, config, directory, source).imported[0];
+    const expectedDirectories: Array<[ToolId, string]> = [
+      ["antigravity", path.join(projectRoot, ".agents", "skills")],
+      ["claude", path.join(projectRoot, ".claude", "skills")],
+      ["cline", path.join(projectRoot, ".cline", "skills")],
+      ["codebuddy", path.join(projectRoot, ".codebuddy", "skills")],
+      ["codex", path.join(projectRoot, ".codex", "skills")],
+      ["cursor", path.join(projectRoot, ".cursor", "skills")],
+      ["copilot", path.join(projectRoot, ".github", "skills")],
+      ["kilo", path.join(projectRoot, ".kilo", "skills")],
+      ["kimi", path.join(projectRoot, ".kimi-code", "skills")],
+      ["opencode", path.join(projectRoot, ".opencode", "skills")],
+      ["qoder", path.join(projectRoot, ".qoder", "skills")],
+      ["qwen", path.join(projectRoot, ".qwen", "skills")]
+    ];
+
+    updateProjectToolTargets(
+      db,
+      project,
+      expectedDirectories.map(([toolId]) => toolId)
+    );
+    const toolTargets = new Map(listProjectToolTargets(db, project).map((target) => [target.toolId, target]));
+    for (const [toolId, skillDirectory] of expectedDirectories) {
+      expect(toolTargets.get(toolId)).toMatchObject({ enabled: true, supported: true, skillDirectory });
+    }
+
+    const linked = setProjectSkillTargets(
+      db,
+      project,
+      skill.id,
+      expectedDirectories.map(([toolId]) => toolId)
+    );
+
+    expect(linked.failures).toEqual([]);
+    expect(linked.targets).toHaveLength(expectedDirectories.length);
+    for (const [, skillDirectory] of expectedDirectories) {
+      expect(fs.existsSync(path.join(skillDirectory, "review"))).toBe(true);
+    }
+    db.close();
+  });
+
+  it("treats shared public skill directories as one target group and keeps private fallbacks", () => {
+    directory = testDir("skillhub-public-directory-groups");
+    const privateConfig = configFixture(directory);
+    const publicConfig = configFixture(directory);
+    publicConfig.projectResources.directoryPreference = "public";
+    for (const toolId of toolIds) {
+      privateConfig.tools[toolId].command = process.execPath;
+      publicConfig.tools[toolId].command = process.execPath;
+    }
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    const source = path.join(directory, "source");
+    writeSkill(path.join(source, "skills", "review"), "review", "Review skill");
+    const skill = importLocalSkills(db, publicConfig, directory, source).imported[0];
+
+    updateProjectToolTargets(db, project, ["codex", "opencode", "kimi"], privateConfig);
+    const privateLinked = setProjectSkillTargets(db, project, skill.id, ["codex"], {}, privateConfig);
+    expect(privateLinked.failures).toEqual([]);
+    expect(fs.existsSync(path.join(projectRoot, ".codex", "skills", "review"))).toBe(true);
+
+    updateProjectToolTargets(db, project, ["codex", "opencode", "kimi"], publicConfig);
+    const publicLinked = setProjectSkillTargets(db, project, skill.id, ["codex", "opencode"], {}, publicConfig);
+    expect(publicLinked.failures).toEqual([]);
+    expect([...new Set(publicLinked.targets.map((target) => target.toolId))].sort()).toEqual(["codex", "kimi", "opencode"]);
+    expect(fs.existsSync(path.join(projectRoot, ".agents", "skills", "review"))).toBe(true);
+    expect(
+      [...new Set(listProjectSkillTargetsState(db, project, publicConfig)
+        .skillTargets.filter((target) => target.skillId === skill.id)
+        .map((target) => target.toolId))]
+        .sort()
+    ).toEqual(["codex", "kimi", "opencode"]);
+
+    const removedPublic = setProjectSkillTargets(db, project, skill.id, ["codex", "kimi"], {}, publicConfig);
+    expect(removedPublic.failures).toEqual([]);
+    expect(fs.existsSync(path.join(projectRoot, ".agents", "skills", "review"))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, ".codex", "skills", "review"))).toBe(true);
+    expect(
+      [...new Set(listProjectSkillTargetsState(db, project, publicConfig)
+        .skillTargets.filter((target) => target.skillId === skill.id)
+        .map((target) => target.toolId))]
+        .sort()
+    ).toEqual(["codex"]);
+    db.close();
+  }, 60000);
+
+  it("infers newly supported tool targets from their project skill directories", () => {
+    directory = testDir("skillhub-project-tool-targets-skill-directories");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(path.join(projectRoot, ".cline", "skills", "review"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".kimi-code", "skills", "review"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".codebuddy", "skills", "review"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".github", "skills", "review"), { recursive: true });
+    const project = db.addProject(projectRoot).project;
+
+    const targets = new Map(listProjectToolTargets(db, project).map((target) => [target.toolId, target]));
+
+    db.close();
+    expect(targets.get("cline")).toMatchObject({ enabled: true, inferred: true });
+    expect(targets.get("kimi")).toMatchObject({ enabled: true, inferred: true });
+    expect(targets.get("codebuddy")).toMatchObject({ enabled: true, inferred: true });
+    expect(targets.get("copilot")).toMatchObject({ enabled: true, inferred: true });
+  });
+
   it("keeps project skill links scoped to root and child directories under one managed project", () => {
     directory = testDir("skillhub-project-child-links");
     const config = configFixture(directory);
@@ -470,6 +586,77 @@ describe("SkillHub", () => {
       expect(preview.items.map((item) => item.kind)).toEqual(["changed"]);
       applyGitHubSourceUpdate(db, config, directory, imported.source.id);
       expect(db.getSkillHubSkill(imported.imported[0].id)?.description).toBe("Changed");
+      db.close();
+    },
+    15000
+  );
+
+  (gitAvailable() ? it : it.skip)(
+    "uses the SKILL.md name for a GitHub source whose repository root is the skill",
+    () => {
+      directory = testDir("skillhub-github-root-skill-name");
+      const config = configFixture(directory);
+      const db = new AppDatabase(directory);
+      const repo = path.join(directory, "remote-root-skill");
+      gitInit(repo);
+      fs.writeFileSync(
+        path.join(repo, "SKILL.md"),
+        `---\nname: code-review-skill\ndescription: |\n  Provides comprehensive code review guidance.\n  Helps catch bugs.\n---\n\n# Code Review Skill\n`,
+        "utf8"
+      );
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "initial"]);
+
+      const imported = importGitHubSource(db, config, directory, "owner/repo", { fixturePath: repo });
+      const skill = imported.imported[0];
+
+      expect(skill).toMatchObject({
+        folderName: "code-review-skill",
+        skillName: "code-review-skill",
+        description: "Provides comprehensive code review guidance. Helps catch bugs."
+      });
+
+      db.upsertSkillHubSkill({
+        id: skill.id,
+        sourceId: skill.sourceId,
+        sourceType: skill.sourceType,
+        folderName: "checkout",
+        skillName: skill.skillName,
+        description: "|",
+        libraryRelativePath: skill.libraryRelativePath,
+        libraryPath: skill.libraryPath,
+        sourceRelativePath: skill.sourceRelativePath,
+        contentHash: skill.contentHash
+      });
+
+      expect(listSkillHub(db, config, directory).skills.find((item) => item.id === skill.id)).toMatchObject({
+        folderName: "code-review-skill",
+        description: "Provides comprehensive code review guidance. Helps catch bugs."
+      });
+
+      db.upsertSkillHubSkill({
+        id: skill.id,
+        sourceId: skill.sourceId,
+        sourceType: skill.sourceType,
+        folderName: "checkout",
+        skillName: skill.skillName,
+        description: "|",
+        libraryRelativePath: skill.libraryRelativePath,
+        libraryPath: skill.libraryPath,
+        sourceRelativePath: skill.sourceRelativePath,
+        contentHash: skill.contentHash
+      });
+
+      const reimported = importGitHubSource(db, config, directory, "owner/repo", { fixturePath: repo });
+      expect(reimported.updated[0]).toMatchObject({
+        id: skill.id,
+        folderName: "code-review-skill",
+        description: "Provides comprehensive code review guidance. Helps catch bugs."
+      });
+      expect(db.getSkillHubSkill(skill.id)).toMatchObject({
+        folderName: "code-review-skill",
+        description: "Provides comprehensive code review guidance. Helps catch bugs."
+      });
       db.close();
     },
     15000

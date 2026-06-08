@@ -710,7 +710,8 @@ function configWithClaudeSource(claudeProjects: string, directory: string): AppC
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -734,7 +735,8 @@ function configWithCodexSource(codexSessions: string, directory: string): AppCon
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -758,7 +760,8 @@ function configWithCopilotSource(copilotState: string, directory: string): AppCo
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -782,7 +785,8 @@ function configWithOpencodeSource(opencodeDb: string, directory: string): AppCon
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -806,7 +810,8 @@ function configWithKiloSource(kiloDb: string, directory: string): AppConfig {
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -830,7 +835,8 @@ function configWithKimiSource(kimiSource: string, directory: string): AppConfig 
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -854,7 +860,8 @@ function configWithCodeBuddySource(codebuddySource: string, directory: string): 
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -878,7 +885,8 @@ function configWithClineSource(clineSource: string, directory: string): AppConfi
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -902,7 +910,8 @@ function configWithCursorAntigravitySources(cursorSource: string, antigravitySou
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -926,7 +935,8 @@ function configWithReasonixSource(reasonixSource: string, directory: string): Ap
       reasonix: { command: "reasonix", sessionSources: [reasonixSource] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 
@@ -950,7 +960,8 @@ function configWithDeepcodeSource(deepcodeSource: string, directory: string): Ap
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }
 

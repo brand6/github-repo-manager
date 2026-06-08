@@ -650,6 +650,10 @@ label,
   gap: 10px;
 }
 
+.project-resource-directory-options {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .terminal-mode-option {
   display: flex;
   align-items: center;
@@ -2359,6 +2363,89 @@ dd {
 
 .side-panel h2 {
   margin: 0;
+}
+
+.project-cli-group-list,
+.project-cli-command-list,
+.project-cli-action-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.project-cli-group {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.project-cli-group-header,
+.project-cli-action-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-cli-group-header strong,
+.project-cli-action-title strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-cli-action-title .metric-pill {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.project-cli-command-row,
+.project-cli-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.project-cli-command-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.project-cli-action-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-cli-action-meta {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 5px 10px;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.project-cli-action-meta dt {
+  font-weight: 850;
+}
+
+.project-cli-action-meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.project-cli-action-row .inline-warning {
+  grid-column: 1 / -1;
 }
 
 .project-skill-list {

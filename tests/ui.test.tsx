@@ -8,6 +8,8 @@ import type {
   HookHubSuite,
   PluginHubList,
   Project,
+  ProjectCliActionRunResult,
+  ProjectCliActionState,
   ProjectAgentApplyResult,
   ProjectAgentState,
   ProjectDetail,
@@ -91,6 +93,8 @@ const clientMock = vi.hoisted(() => ({
   deletePluginHubPlugin: vi.fn(),
   projectToolTargets: vi.fn(),
   updateProjectToolTargets: vi.fn(),
+  projectCliActions: vi.fn(),
+  executeProjectCliAction: vi.fn(),
   projectSkillTargets: vi.fn(),
   updateProjectSkillTargets: vi.fn(),
   projectLocalSkills: vi.fn(),
@@ -159,8 +163,8 @@ describe("HomePage", () => {
     clientMock.tools.mockResolvedValue([]);
     clientMock.warnings.mockResolvedValue([]);
     clientMock.config.mockResolvedValue(appConfigFixture());
-    clientMock.updateConfig.mockImplementation((config: Partial<Pick<AppConfig, "terminal" | "skillhub">>) =>
-      Promise.resolve(appConfigFixture(config.terminal?.mode ?? "new-window", config.skillhub?.rootDir))
+    clientMock.updateConfig.mockImplementation((config: Partial<Pick<AppConfig, "terminal" | "projectResources">>) =>
+      Promise.resolve(appConfigFixture(config.terminal?.mode ?? "new-window", undefined, config.projectResources?.directoryPreference))
     );
     clientMock.skillhub.mockResolvedValue({
       config: { rootDir: "C:\\tmp\\local-ai-workbench\\skillhub", libraryDir: "C:\\tmp\\local-ai-workbench\\skillhub\\library" },
@@ -362,6 +366,8 @@ describe("HomePage", () => {
       message: null
     });
     clientMock.updateProjectToolTargets.mockResolvedValue([]);
+    clientMock.projectCliActions.mockResolvedValue(projectCliStateFixture(projectFixture("E:\\old"), { registered: false }));
+    clientMock.executeProjectCliAction.mockResolvedValue(projectCliRunResultFixture(projectFixture("E:\\old")));
     clientMock.updateProjectSkillTargets.mockResolvedValue({
       projectId: "project-1",
       skillId: "skill-1",
@@ -815,6 +821,10 @@ describe("HomePage", () => {
     fireEvent.change(within(customPanel).getByLabelText("本地可执行文件路径"), { target: { value: "C:\\Tools\\internal.exe" } });
     fireEvent.click(within(customPanel).getByRole("button", { name: "添加本地 CLI" }));
     await waitFor(() => expect(clientMock.addCliHubLocalPath).toHaveBeenCalledWith("C:\\Tools\\internal.exe", "", ""));
+    fireEvent.click(within(customPanel).getByRole("button", { name: "安装命令" }));
+    fireEvent.change(within(customPanel).getByLabelText("安装命令"), { target: { value: "npm install -g internal-cli" } });
+    fireEvent.click(within(customPanel).getByRole("button", { name: "安装并添加 CLI" }));
+    await waitFor(() => expect(clientMock.addCliHubInstallCommand).toHaveBeenCalledWith("npm install -g internal-cli", "", ""));
 
     fireEvent.click(within(codexRow).getByRole("button", { name: "检查更新" }));
     await waitFor(() => expect(clientMock.checkCliHubUpdate).toHaveBeenCalledWith("codex"));
@@ -1259,6 +1269,8 @@ describe("HomePage", () => {
     expect(within(dialog).queryByText("设置")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("新的工作目录")).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "保存工作目录" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("当前 SkillHub 目录")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "选择 SkillHub 目录" })).not.toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "更换工作目录" }));
 
@@ -1281,6 +1293,22 @@ describe("HomePage", () => {
     expect(clientMock.updateConfig).toHaveBeenCalledWith({ terminal: { mode: "per-project" } });
     expect(await screen.findByText("窗口打开方式已更新")).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "保存窗口方式" })).not.toBeInTheDocument();
+  });
+
+  it("updates the project resource directory preference from settings", async () => {
+    clientMock.config.mockResolvedValue(appConfigFixture("new-window", "C:\\tmp\\local-ai-workbench\\skillhub", "private"));
+    clientMock.updateConfig.mockResolvedValue(appConfigFixture("new-window", "C:\\tmp\\local-ai-workbench\\skillhub", "public"));
+
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+
+    const dialog = screen.getByRole("dialog", { name: "应用设置" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "优先公共目录" }));
+
+    expect(clientMock.updateConfig).toHaveBeenCalledWith({ projectResources: { directoryPreference: "public" } });
+    expect(await screen.findByText("项目资源目录偏好已更新")).toBeInTheDocument();
   });
 
   it("does not show the legacy agents CLI settings", async () => {
@@ -2131,6 +2159,92 @@ describe("HomePage", () => {
     expect(within(panel).getByText("Claude Code")).toBeInTheDocument();
     expect(within(panel).getByText("current")).toBeInTheDocument();
     expect(within(panel).getByText("OpenCode")).toBeInTheDocument();
+  });
+
+  it("opens project CLI management for a custom CodeGraph CLI on the selected child group", async () => {
+    const project = projectFixture("E:\\repo");
+    const childRoot = "E:\\repo\\packages\\app";
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailWithChildGroup(project, childRoot));
+    clientMock.projectCliActions.mockResolvedValue(projectCliStateFixture(project, { targetRootPath: childRoot }));
+    clientMock.executeProjectCliAction.mockResolvedValue(projectCliRunResultFixture(project, childRoot));
+
+    render(<App />);
+
+    await screen.findByText("repo");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    const childHeading = await screen.findByRole("heading", { name: "packages\\app" });
+    const childGroup = childHeading.closest(".session-group") as HTMLElement;
+
+    fireEvent.click(within(childGroup).getByRole("button", { name: "CLI" }));
+
+    await waitFor(() => expect(clientMock.projectCliActions).toHaveBeenLastCalledWith(project.id, childRoot));
+    const panel = await screen.findByRole("complementary", { name: "项目 CLI 管理" });
+    expect(within(panel).getAllByText(childRoot).length).toBeGreaterThan(0);
+    expect(within(panel).getByText("CodeGraph")).toBeInTheDocument();
+    expect(within(panel).getByText("codegraph status")).toBeInTheDocument();
+    expect(within(panel).getAllByText(`${childRoot}\\.codegraph`).length).toBeGreaterThan(0);
+
+    fireEvent.click(within(panel).getByRole("button", { name: "查看状态" }));
+
+    await waitFor(() => expect(clientMock.executeProjectCliAction).toHaveBeenCalledWith(project.id, "codegraph:status", childRoot, false));
+    expect(await within(panel).findByText("Index is ready")).toBeInTheDocument();
+    expect(await screen.findByText("项目 CLI 动作完成：查看状态")).toBeInTheDocument();
+  });
+
+  it("renders installed function and dependency CLI commands without requiring action buttons", async () => {
+    const project = projectFixture("E:\\repo");
+    const childRoot = "E:\\repo\\packages\\app";
+    const gitPath = "C:\\Program Files\\Git\\cmd\\git.exe";
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailWithChildGroup(project, childRoot));
+    clientMock.projectCliActions.mockResolvedValue({
+      projectId: project.id,
+      targetRootPath: childRoot,
+      groups: [
+        {
+          cliId: "git",
+          displayName: "Git",
+          availability: {
+            state: "available",
+            reason: null,
+            cliHubCliId: "git",
+            cliHubAvailabilityState: "available"
+          },
+          commands: [
+            {
+              cliId: "git",
+              displayName: "Git",
+              kind: "dependency",
+              command: "git",
+              commandText: "git",
+              cwd: childRoot,
+              localPath: gitPath,
+              resolvedPaths: [gitPath],
+              version: "git version 2.51.0.windows.1"
+            }
+          ],
+          actions: []
+        }
+      ]
+    } satisfies ProjectCliActionState);
+
+    render(<App />);
+
+    await screen.findByText("repo");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    const childHeading = await screen.findByRole("heading", { name: "packages\\app" });
+    const childGroup = childHeading.closest(".session-group") as HTMLElement;
+
+    fireEvent.click(within(childGroup).getByRole("button", { name: "CLI" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目 CLI 管理" });
+    expect(within(panel).queryByText("没有可用项目 CLI 命令或动作")).not.toBeInTheDocument();
+    expect(within(panel).getByText("Git")).toBeInTheDocument();
+    expect(within(panel).getByText("依赖 CLI")).toBeInTheDocument();
+    expect(within(panel).getAllByText("git").length).toBeGreaterThan(0);
+    expect(within(panel).getByText(gitPath)).toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "git" })).not.toBeInTheDocument();
   });
 
   it("opens project Agent panel for a child group and handles apply conflicts and local migration", async () => {
@@ -3321,6 +3435,121 @@ function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boo
   };
 }
 
+function projectCliStateFixture(
+  project: Project,
+  options: { targetRootPath?: string; registered?: boolean } = {}
+): ProjectCliActionState {
+  const targetRootPath = options.targetRootPath ?? project.rootPath;
+  if (options.registered === false) {
+    return { projectId: project.id, targetRootPath, groups: [] };
+  }
+  const availability = {
+    state: "available" as const,
+    reason: null,
+    cliHubCliId: "custom-command-codegraph-123",
+    cliHubAvailabilityState: "available" as const
+  };
+  return {
+    projectId: project.id,
+    targetRootPath,
+    groups: [
+      {
+        cliId: "custom-command-codegraph-123",
+        displayName: "CodeGraph",
+        availability,
+        actions: [
+          {
+            actionId: "codegraph:init",
+            cliId: "custom-command-codegraph-123",
+            cliDisplayName: "CodeGraph",
+            label: "初始化索引",
+            command: "codegraph",
+            args: ["init", "-i"],
+            commandText: "codegraph init -i",
+            cwd: targetRootPath,
+            cwdPolicy: "target-root",
+            executionMode: "terminal",
+            writesProject: true,
+            requiresConfirmation: true,
+            affectedPaths: [`${targetRootPath}\\.codegraph`],
+            availability
+          },
+          {
+            actionId: "codegraph:status",
+            cliId: "custom-command-codegraph-123",
+            cliDisplayName: "CodeGraph",
+            label: "查看状态",
+            command: "codegraph",
+            args: ["status"],
+            commandText: "codegraph status",
+            cwd: targetRootPath,
+            cwdPolicy: "target-root",
+            executionMode: "inline",
+            writesProject: false,
+            requiresConfirmation: false,
+            affectedPaths: [],
+            availability
+          },
+          {
+            actionId: "codegraph:index-force",
+            cliId: "custom-command-codegraph-123",
+            cliDisplayName: "CodeGraph",
+            label: "重建索引",
+            command: "codegraph",
+            args: ["index", "--force"],
+            commandText: "codegraph index --force",
+            cwd: targetRootPath,
+            cwdPolicy: "target-root",
+            executionMode: "terminal",
+            writesProject: true,
+            requiresConfirmation: true,
+            affectedPaths: [`${targetRootPath}\\.codegraph`],
+            availability
+          },
+          {
+            actionId: "codegraph:sync",
+            cliId: "custom-command-codegraph-123",
+            cliDisplayName: "CodeGraph",
+            label: "增量同步",
+            command: "codegraph",
+            args: ["sync"],
+            commandText: "codegraph sync",
+            cwd: targetRootPath,
+            cwdPolicy: "target-root",
+            executionMode: "terminal",
+            writesProject: true,
+            requiresConfirmation: true,
+            affectedPaths: [`${targetRootPath}\\.codegraph`],
+            availability
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function projectCliRunResultFixture(project: Project, targetRootPath = project.rootPath): ProjectCliActionRunResult {
+  return {
+    projectId: project.id,
+    targetRootPath,
+    actionId: "codegraph:status",
+    cliId: "custom-command-codegraph-123",
+    label: "查看状态",
+    command: "codegraph",
+    args: ["status"],
+    commandText: "codegraph status",
+    cwd: targetRootPath,
+    executionMode: "inline",
+    status: "success",
+    startedAt: "2026-06-01T00:00:00Z",
+    completedAt: "2026-06-01T00:00:01Z",
+    exitCode: 0,
+    stdout: "Index is ready",
+    stderr: "",
+    launch: null
+  };
+}
+
 function agentHubSourceFixture(): AgentHubList["sources"][number] {
   return {
     id: "agency-agents",
@@ -3829,7 +4058,11 @@ function skillHubUpdatePreviewFixture(source: SkillHubSource): SkillHubSourceUpd
   };
 }
 
-function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", skillHubRoot = "C:\\tmp\\local-ai-workbench\\skillhub"): AppConfig {
+function appConfigFixture(
+  mode: AppConfig["terminal"]["mode"] = "new-window",
+  skillHubRoot = "C:\\tmp\\local-ai-workbench\\skillhub",
+  directoryPreference: AppConfig["projectResources"]["directoryPreference"] = "private"
+): AppConfig {
   return {
     version: 1,
     tools: {
@@ -3849,7 +4082,8 @@ function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", sk
       reasonix: { command: "reasonix" }
     },
     terminal: { mode },
-    skillhub: { rootDir: skillHubRoot }
+    skillhub: { rootDir: skillHubRoot },
+    projectResources: { directoryPreference }
   };
 }
 

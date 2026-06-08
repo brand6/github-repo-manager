@@ -37,6 +37,8 @@ import type {
   PluginHubSourceDeleteMode,
   PluginHubSourceDeletePreview,
   Project,
+  ProjectCliActionRunResult,
+  ProjectCliActionState,
   ProjectHookBindingRemovalResult,
   ProjectDetail,
   ProjectHookState,
@@ -144,7 +146,7 @@ export const client = {
   setDataDir: (dataDir: string) => apiPost<BootstrapState>("/api/bootstrap/data-dir", { dataDir }),
   eventsUrl: () => `/api/events?token=${encodeURIComponent(localApiToken())}`,
   config: () => apiGet<AppConfig>("/api/config"),
-  updateConfig: (config: Partial<Pick<AppConfig, "terminal" | "skillhub">>) => apiPatch<AppConfig>("/api/config", config),
+  updateConfig: (config: Partial<Pick<AppConfig, "terminal" | "projectResources">>) => apiPatch<AppConfig>("/api/config", config),
   skillhub: (query = "") => apiGet<SkillHubList>(`/api/skillhub${query ? `?query=${encodeURIComponent(query)}` : ""}`),
   importLocalSkill: (path: string, overwrite = false) =>
     apiPost<SkillHubImportResult>("/api/skillhub/import/local", { path, overwrite }),
@@ -235,6 +237,13 @@ export const client = {
   refreshProject: (id: string) => apiPost<RefreshResult>(`/api/projects/${id}/refresh`),
   projectToolTargets: (id: string) => apiGet<ProjectToolTarget[]>(`/api/projects/${id}/tool-targets`),
   updateProjectToolTargets: (id: string, toolIds: string[]) => apiPatch<ProjectToolTarget[]>(`/api/projects/${id}/tool-targets`, { toolIds }),
+  projectCliActions: (id: string, targetRootPath?: string) =>
+    apiGet<ProjectCliActionState>(`/api/projects/${id}/cli-actions${projectTargetQuery(targetRootPath)}`),
+  executeProjectCliAction: (id: string, actionId: string, targetRootPath?: string, dryRun = false) =>
+    apiPost<ProjectCliActionRunResult>(`/api/projects/${id}/cli-actions/${encodeURIComponent(actionId)}/execute`, {
+      ...(targetRootPath ? { targetRootPath } : {}),
+      dryRun
+    }),
   projectSkillTargets: (id: string, targetRootPath?: string) =>
     apiGet<ProjectSkillTargetsState>(`/api/projects/${id}/skill-targets${projectTargetQuery(targetRootPath)}`),
   updateProjectSkillTargets: (id: string, skillId: string, toolIds: string[], replaceConflicts = false, targetRootPath?: string) =>

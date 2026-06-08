@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("SkillHub API", () => {
-  it("returns default config, persists root updates, and imports local skills", async () => {
+  it("returns the workspace SkillHub config, rejects root updates, and imports local skills", async () => {
     directory = testDir("skillhub-api");
     context = new AppContext(directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
@@ -42,8 +42,8 @@ describe("SkillHub API", () => {
       .patch("/api/config")
       .set("x-local-api-token", context.token)
       .send({ skillhub: { rootDir: nextRoot } })
-      .expect(200);
-    expect(updated.body.skillhub.rootDir).toBe(nextRoot);
+      .expect(400);
+    expect(updated.body.error).toBe("skillhub.rootDir is managed from dataDir");
 
     const localSkill = path.join(directory, "local", "review");
     fs.mkdirSync(localSkill, { recursive: true });
@@ -56,7 +56,8 @@ describe("SkillHub API", () => {
 
     expect(imported.body.imported[0]).toMatchObject({ folderName: "review", libraryRelativePath: "skills/review" });
     expect(imported.body.source).toMatchObject({ id: "skills", label: "skills", type: "local" });
-    expect(fs.existsSync(path.join(nextRoot, "library", "skills", "review", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(directory, "skillhub", "library", "skills", "review", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(nextRoot, "library", "skills", "review", "SKILL.md"))).toBe(false);
 
     const listed = await request(app).get("/api/skillhub").set("x-local-api-token", context.token).expect(200);
     expect(listed.body.sources).toEqual(expect.arrayContaining([expect.objectContaining({ id: "skills", label: "skills", type: "local" })]));

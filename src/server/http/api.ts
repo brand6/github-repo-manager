@@ -10,6 +10,7 @@ import {
   type HookHubSuiteInput,
   type HookHubSupportedToolId,
   isMcpHubTargetToolId,
+  isProjectResourceDirectoryPreference,
   isTerminalMode,
   isToolId,
   type AppConfig,
@@ -130,6 +131,11 @@ import {
   updatePluginHubGitHubSource,
   updateCustomPlugin
 } from "../pluginhub/pluginhub.js";
+import {
+  ProjectCliActionError,
+  executeProjectCliAction,
+  listProjectCliActions
+} from "../projectCli/projectCliActions.js";
 import { applyRuleSync, commitRuleSyncTarget, createRuleFile, createRuleTemplateFile, getRuleSyncStatus, openRuleFile, prepareRuleFileCreate } from "../skillhub/ruleSync.js";
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, unavailableProjectToolIds, updateProjectToolTargets } from "../skillhub/projectSkills.js";
 import type { AppContext } from "../appContext.js";
@@ -204,19 +210,27 @@ export function installApi(app: Express, context: AppContext): void {
 
   app.patch("/api/config", (request, response) => {
     const mode = request.body?.terminal?.mode;
-    const skillHubRootDir = typeof request.body?.skillhub?.rootDir === "string" ? request.body.skillhub.rootDir.trim() : null;
+    const directoryPreference = request.body?.projectResources?.directoryPreference;
     if (mode !== undefined && !isTerminalMode(mode)) {
       response.status(400).json({ error: "terminal.mode must be new-window, per-tool, or per-project" });
       return;
     }
-    if (request.body?.skillhub !== undefined && skillHubRootDir === null) {
-      response.status(400).json({ error: "skillhub.rootDir must be a string" });
+    if (request.body?.skillhub !== undefined) {
+      response.status(400).json({ error: "skillhub.rootDir is managed from dataDir" });
+      return;
+    }
+    if (directoryPreference !== undefined && !isProjectResourceDirectoryPreference(directoryPreference)) {
+      response.status(400).json({ error: "projectResources.directoryPreference must be private or public" });
       return;
     }
     const nextConfig: AppConfig = {
       ...context.config(),
       terminal: { mode: isTerminalMode(mode) ? mode : context.config().terminal.mode },
-      skillhub: { rootDir: skillHubRootDir ?? context.config().skillhub.rootDir }
+      projectResources: {
+        directoryPreference: isProjectResourceDirectoryPreference(directoryPreference)
+          ? directoryPreference
+          : context.config().projectResources.directoryPreference
+      }
     };
     response.json(context.setConfig(nextConfig));
   });
@@ -919,6 +933,43 @@ export function installApi(app: Express, context: AppContext): void {
     response.json(updateProjectToolTargets(context.database(), project, toolIds, context.config()));
   });
 
+  app.get("/api/projects/:id/cli-actions", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    response.json(listProjectCliActions(context.database(), project));
+  });
+
+  app.post(
+    "/api/projects/:id/cli-actions/:actionId/execute",
+    asyncHandler(async (request, response) => {
+      const project = projectSkillScopeFromRequest(context, request, response);
+      const actionId = stringParam(request, "actionId");
+      if (!project) return;
+      if (!actionId) {
+        response.status(404).json({ error: "project-cli-action-not-found" });
+        return;
+      }
+      try {
+        response.json(
+          await executeProjectCliAction(
+            context.database(),
+            project,
+            actionId,
+            context.config(),
+            context.cliHubRuntimeOptions(),
+            { dryRun: Boolean(request.body?.dryRun) }
+          )
+        );
+      } catch (error) {
+        if (error instanceof ProjectCliActionError) {
+          response.status(error.statusCode).json({ error: error.code, reason: error.message });
+          return;
+        }
+        response.status(400).json({ error: "project-cli-action-failed", reason: error instanceof Error ? error.message : "project-cli-action-failed" });
+      }
+    })
+  );
+
   app.get("/api/projects/:id/skill-targets", (request, response) => {
     const dataDir = requireDataDir(context, response);
     if (!dataDir) return;
@@ -927,7 +978,7 @@ export function installApi(app: Express, context: AppContext): void {
     if (!project) {
       return;
     }
-    response.json(listProjectSkillTargetsState(context.database(), project));
+    response.json(listProjectSkillTargetsState(context.database(), project, context.config()));
   });
 
   app.get("/api/projects/:id/local-skills", (request, response) => {
@@ -938,7 +989,7 @@ export function installApi(app: Express, context: AppContext): void {
     if (!project) {
       return;
     }
-    response.json(listProjectLocalSkillsState(context.database(), project));
+    response.json(listProjectLocalSkillsState(context.database(), project, context.config()));
   });
 
   app.post("/api/projects/:id/local-skills/migrate", (request, response) => {
@@ -1268,7 +1319,7 @@ export function installApi(app: Express, context: AppContext): void {
       response.json(
         setProjectSkillTargets(context.database(), project, request.params.skillId, toolIds, {
           replaceConflicts: Boolean(request.body?.replaceConflicts)
-        })
+        }, context.config())
       );
     } catch (error) {
       response.status(400).json({ error: "project-skill-target-update-failed", reason: error instanceof Error ? error.message : "project-skill-target-update-failed" });

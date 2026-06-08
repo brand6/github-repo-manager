@@ -84,6 +84,7 @@ const versionCommandTimeoutMs = 5000;
 const pathWriteTimeoutMs = 10000;
 const updateCheckCommandTimeoutMs = 60000;
 const installOrUpdateCommandTimeoutMs = 5 * 60 * 1000;
+const powershellInstallerCommandPrefix = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"];
 const defaultCommandRunner: CliHubCommandRunner = {
   async lookup(commandName: string) {
     const result =
@@ -525,12 +526,25 @@ export async function addCustomInstallCommandCli(
   const commandName = normalizeCommandName(input.commandName ?? parsed.inferredCommandName);
   if (!commandName) throw new Error("commandName 不能为空");
   const displayName = input.displayName?.trim() || parsed.displayName;
-  const cli = database.upsertCliHubCli({
-    ...emptyCli(customCliId("command", commandName, input.installCommand), displayName, "custom", "custom", "install-command", [commandName]),
-    channels: [parsed.channel]
+  const cliId = customCliId("command", commandName, input.installCommand);
+  const draft = emptyCli(cliId, displayName, "custom", "custom", "install-command", [commandName]);
+  return operationRunner(options).run(draft, "install", async () => {
+    const installCommand = parsed.channel.installCommand;
+    if (!installCommand?.[0]) throw new Error("安装渠道缺少 installCommand");
+    const startedAt = nowIso();
+    const result = await commandRunner(options).run(installCommand[0], installCommand.slice(1), {
+      timeoutMs: installOrUpdateCommandTimeoutMs
+    });
+    if (result.exitCode !== 0) throw new CliHubCommandError("CLI 安装失败", result);
+    await pathManager(options).refreshProcessPath?.();
+    const cli = database.upsertCliHubCli({
+      ...draft,
+      channels: [parsed.channel],
+      recentOperation: commandOperation("install", "success", parsed.channel.provider, startedAt, result, "CLI 安装完成")
+    });
+    await refreshCliHubDiscovery(database, cli.cliId, options);
+    return requiredCli(database, cli.cliId);
   });
-  await refreshCliHubDiscovery(database, cli.cliId, options);
-  return requiredCli(database, cli.cliId);
 }
 
 export function addCliHubChannel(database: AppDatabase, cliId: string, installCommand: string): CliHubCli {
@@ -887,6 +901,8 @@ function providerRef(provider: CliHubProvider, channels: CliHubChannel[], reason
 function parseInstallCommand(input: string): InstallCommandParseResult {
   const text = input.trim();
   if (!text) throw new Error("installCommand 不能为空");
+  const powershellInstaller = parsePowerShellInstallerCommand(text);
+  if (powershellInstaller) return powershellInstaller;
   if (hasUnsafeShellSyntax(text)) throw new Error("安装命令包含 pipe、重定向或复杂 shell 语法，已拒绝");
   const tokens = tokenizeCommandLine(text);
   if (tokens.length === 0) throw new Error("installCommand 不能为空");
@@ -919,6 +935,78 @@ function parseInstallCommand(input: string): InstallCommandParseResult {
     return parsedChannel("installer-command", tokens[0] ?? "installer", tokens, path.basename(tokens[0] ?? "installer"), path.basename(tokens[0] ?? "installer"));
   }
   throw new Error("安装命令无法解析为受支持 provider");
+}
+
+function parsePowerShellInstallerCommand(text: string): InstallCommandParseResult | null {
+  const script = powerShellInstallerScript(text);
+  if (!script) return null;
+  const installer = parsePowerShellInstallerScript(script);
+  if (!installer) return null;
+  const packageId = installerPackageIdFromUrl(installer.url);
+  return parsedChannel("installer-command", packageId, [...powershellInstallerCommandPrefix, installer.script], commandNameFromPackage(packageId), packageId);
+}
+
+function powerShellInstallerScript(text: string): string | null {
+  if (parsePowerShellInstallerScript(text)) return text.trim();
+  let tokens: string[];
+  try {
+    tokens = tokenizeCommandLine(text);
+  } catch {
+    return null;
+  }
+  if (!isPowerShellExecutable(tokens[0] ?? "")) return null;
+  const commandIndex = tokens.findIndex((token) => {
+    const normalized = token.toLowerCase();
+    return normalized === "-command" || normalized === "-c";
+  });
+  if (commandIndex < 0) return null;
+  const script = tokens.slice(commandIndex + 1).join(" ").trim();
+  return script || null;
+}
+
+function parsePowerShellInstallerScript(script: string): { url: string; script: string } | null {
+  const trimmed = script.trim();
+  const pipeMatch = trimmed.match(/^(?:irm|Invoke-RestMethod)\s+(['"]?)(https:\/\/[^\s'"|)<>&;`]+)\1\s*\|\s*(?:iex|Invoke-Expression)$/i);
+  if (pipeMatch?.[2] && looksLikePowerShellInstallerUrl(pipeMatch[2])) {
+    return { url: pipeMatch[2], script: `irm ${pipeMatch[2]} | iex` };
+  }
+  const expressionMatch = trimmed.match(/^(?:iex|Invoke-Expression)\s+\(\s*(?:irm|Invoke-RestMethod)\s+(['"]?)(https:\/\/[^\s'"|)<>&;`]+)\1\s*\)$/i);
+  if (expressionMatch?.[2] && looksLikePowerShellInstallerUrl(expressionMatch[2])) {
+    return { url: expressionMatch[2], script: `iex (irm '${expressionMatch[2]}')` };
+  }
+  return null;
+}
+
+function isPowerShellExecutable(value: string): boolean {
+  const executable = value.toLowerCase();
+  return executable === "powershell" || executable === "powershell.exe" || executable === "pwsh" || executable === "pwsh.exe";
+}
+
+function looksLikePowerShellInstallerUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  const pathname = url.pathname.toLowerCase();
+  const basename = path.posix.basename(pathname);
+  return basename.endsWith(".ps1") || basename === "install" || basename === "installer";
+}
+
+function installerPackageIdFromUrl(value: string): string {
+  const url = new URL(value);
+  const host = url.hostname.toLowerCase();
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (host === "raw.githubusercontent.com" && segments[1]) return segments[1];
+  if ((host === "github.com" || host.endsWith(".github.com")) && segments[1]) return segments[1];
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const candidate = segments[index] ?? "";
+    const basename = candidate.replace(/\.(ps1|exe|msi|pkg|dmg|sh)$/i, "");
+    if (basename && !/^install(?:er)?$/i.test(basename)) return basename;
+  }
+  return host.split(".").find(Boolean) ?? "installer";
 }
 
 function parsedChannel(

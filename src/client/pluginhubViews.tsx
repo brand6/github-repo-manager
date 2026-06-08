@@ -6,6 +6,7 @@ import type {
   PluginHubComponentRef,
   PluginHubComponentType,
   PluginHubCustomPluginInput,
+  PluginHubHarnessSupport,
   PluginHubList,
   PluginHubPlugin,
   ProjectPluginApplyResult,
@@ -192,14 +193,19 @@ export function ProjectPluginsPanel({
   const [toolId, setToolId] = useState<ToolId>("codex");
   const plugins = state?.plugins ?? [];
   const selectedPluginId = pluginId || plugins[0]?.id || "";
+  const selectedPlugin = plugins.find((plugin) => plugin.id === selectedPluginId) ?? null;
   const projectToolTargets = useMemo(() => state?.toolTargets ?? [], [state]);
-  const supportedToolTargets = useMemo(() => projectToolTargets.filter((target) => target.supported), [projectToolTargets]);
+  const supportedToolTargets = useMemo(
+    () => projectToolTargets.filter((target) => target.supported && pluginToolInstallable(selectedPlugin, target.toolId)),
+    [projectToolTargets, selectedPlugin]
+  );
   const selectedToolTarget = projectToolTargets.find((target) => target.toolId === toolId) ?? null;
+  const selectedToolInstallable = Boolean(selectedToolTarget?.supported && pluginToolInstallable(selectedPlugin, toolId));
 
   useEffect(() => {
     const fallback = supportedToolTargets[0] ?? projectToolTargets[0] ?? null;
-    if (fallback && (!selectedToolTarget || !selectedToolTarget.supported)) setToolId(fallback.toolId);
-  }, [projectToolTargets, selectedToolTarget, supportedToolTargets]);
+    if (fallback && !selectedToolInstallable) setToolId(fallback.toolId);
+  }, [projectToolTargets, selectedToolInstallable, supportedToolTargets]);
 
   return (
     <aside className="side-panel project-plugins-panel" aria-label="项目 Plugin 管理">
@@ -237,11 +243,18 @@ export function ProjectPluginsPanel({
                 <div className="tool-chip-list">
                   {projectToolTargets.length === 0 ? <div className="empty-state compact">还没有项目使用工具</div> : null}
                   {projectToolTargets.map((target) => (
-                    <ProjectPluginToolChip key={target.toolId} target={target} checked={toolId === target.toolId} busy={busy} onSelect={setToolId} />
+                    <ProjectPluginToolChip
+                      key={target.toolId}
+                      target={target}
+                      checked={toolId === target.toolId}
+                      busy={busy}
+                      pluginSupport={pluginToolSupport(selectedPlugin, target.toolId)}
+                      onSelect={setToolId}
+                    />
                   ))}
                 </div>
               </div>
-              <button className="primary" type="button" disabled={busy || !selectedPluginId || !selectedToolTarget?.supported} onClick={() => onInstall(selectedPluginId, toolId)}>
+              <button className="primary" type="button" disabled={busy || !selectedPluginId || !selectedToolInstallable} onClick={() => onInstall(selectedPluginId, toolId)}>
                 安装
               </button>
             </div>
@@ -302,28 +315,52 @@ function ProjectPluginToolChip({
   target,
   checked,
   busy,
+  pluginSupport,
   onSelect
 }: {
   target: ProjectToolTarget;
   checked: boolean;
   busy: boolean;
+  pluginSupport: PluginHubHarnessSupport;
   onSelect: (toolId: ToolId) => void;
 }) {
+  const disabled = busy || !target.supported || !isPluginHarnessInstallable(pluginSupport);
+  const title = pluginToolChipTitle(target, pluginSupport);
   return (
     <label
       className="tool-target-chip"
-      title={target.supported ? (target.skillDirectory ?? target.toolId) : "尚未支持"}
+      title={title}
       onClick={(event) => {
-        if (!busy && !target.supported) {
+        if (!busy && disabled) {
           event.preventDefault();
-          window.alert("尚未支持");
+          window.alert(title);
         }
       }}
     >
-      <input type="radio" name="project-plugin-tool" checked={checked} disabled={busy || !target.supported} onChange={() => onSelect(target.toolId)} />
+      <input type="radio" name="project-plugin-tool" checked={checked} disabled={disabled} onChange={() => onSelect(target.toolId)} />
       <span>{target.toolId}</span>
     </label>
   );
+}
+
+function pluginToolSupport(plugin: PluginHubPlugin | null, toolId: ToolId): PluginHubHarnessSupport {
+  return plugin?.harnessSupport[toolId] ?? "unsupported";
+}
+
+function pluginToolInstallable(plugin: PluginHubPlugin | null, toolId: ToolId): boolean {
+  return isPluginHarnessInstallable(pluginToolSupport(plugin, toolId));
+}
+
+function isPluginHarnessInstallable(support: PluginHubHarnessSupport): boolean {
+  return support === "native" || support === "component-only";
+}
+
+function pluginToolChipTitle(target: ProjectToolTarget, support: PluginHubHarnessSupport): string {
+  if (!target.supported) return target.reason ?? "项目未支持该工具";
+  if (support === "planned") return "该 Plugin 的目标工具适配尚未实现";
+  if (support === "unsupported") return "该 Plugin 不支持安装到该工具";
+  if (support === "component-only") return target.skillDirectory ?? "通过组件 Hub 安装";
+  return target.skillDirectory ?? "原生 Plugin package";
 }
 
 function PluginListSection({

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import type { LaunchCommand, LaunchResponse, TerminalMode, ToolId } from "../../shared/types.js";
+import type { LaunchCommand, LaunchResponse, TerminalMode } from "../../shared/types.js";
 
 interface TerminalHostOptions {
   platform?: NodeJS.Platform;
@@ -63,7 +63,7 @@ export function buildTerminalHost(command: LaunchCommand, options: TerminalHostO
 
 export function terminalWindowTarget(
   mode: TerminalMode,
-  context: { toolId: ToolId; cwd?: string | null; projectRootPath?: string | null }
+  context: { toolId: string; cwd?: string | null; projectRootPath?: string | null }
 ): string {
   if (mode === "new-window") return "new";
   if (mode === "per-tool") return `aiw-tool-${context.toolId}`;

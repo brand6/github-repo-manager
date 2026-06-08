@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isTerminalMode, toolIds, type AppConfig, type BootstrapState, type ToolId } from "../../shared/types.js";
+import { isProjectResourceDirectoryPreference, isTerminalMode, toolIds, type AppConfig, type BootstrapState, type ToolId } from "../../shared/types.js";
 
 export interface BootstrapFile {
   version: 1;
@@ -58,7 +58,7 @@ export function defaultAppConfig(): AppConfig {
     deepcode: { command: "deepcode" },
     reasonix: { command: "reasonix" }
   };
-  return { version: 1, tools, terminal: { mode: "new-window" }, skillhub: { rootDir: "" } };
+  return { version: 1, tools, terminal: { mode: "new-window" }, skillhub: { rootDir: "" }, projectResources: { directoryPreference: "private" } };
 }
 
 export function ensureConfigFiles(dataDir: string): AppConfig {
@@ -86,17 +86,17 @@ export function writeAppConfig(dataDir: string, config: AppConfig): void {
 
 export function normalizeConfig(config: AppConfig, dataDir?: string): AppConfig {
   const defaults = defaultAppConfig();
-  const configuredSkillHubRoot =
-    typeof config.skillhub?.rootDir === "string" && config.skillhub.rootDir.trim().length > 0
-      ? config.skillhub.rootDir.trim()
-      : dataDir
-        ? path.join(dataDir, "skillhub")
-        : defaults.skillhub.rootDir;
+  const skillHubRoot = dataDir ? path.join(dataDir, "skillhub") : defaults.skillhub.rootDir;
   return {
     version: 1,
     tools: Object.fromEntries(toolIds.map((toolId) => [toolId, { ...defaults.tools[toolId], ...(config.tools?.[toolId] ?? {}) }])) as AppConfig["tools"],
     terminal: { mode: isTerminalMode(config.terminal?.mode) ? config.terminal.mode : defaults.terminal.mode },
-    skillhub: { rootDir: configuredSkillHubRoot }
+    skillhub: { rootDir: skillHubRoot },
+    projectResources: {
+      directoryPreference: isProjectResourceDirectoryPreference(config.projectResources?.directoryPreference)
+        ? config.projectResources.directoryPreference
+        : defaults.projectResources.directoryPreference
+    }
   };
 }
 

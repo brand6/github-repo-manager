@@ -2,10 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import type { AppConfig, LaunchCommand, SessionEntry, ToolId, ToolStatus } from "../../shared/types.js";
-import type { ToolAdapter } from "./toolAdapter.js";
+import type { AppConfig, LaunchCommand, ProjectResourceDirectoryPreference, SessionEntry, ToolId, ToolStatus } from "../../shared/types.js";
+import type { SkillTargetOptions, ToolAdapter } from "./toolAdapter.js";
 
 function commandAvailable(command: string): boolean {
+  if (path.isAbsolute(command)) return fs.existsSync(command);
   const lookup = process.platform === "win32" ? "where.exe" : "command";
   const args = process.platform === "win32" ? [command] : ["-v", command];
   const result = spawnSync(lookup, args, { stdio: "ignore", shell: process.platform !== "win32" });
@@ -31,12 +32,58 @@ function existing(...parts: string[]): string {
   return path.join(...parts);
 }
 
-function projectSkillDirectory(projectRoot: string, ...parts: string[]) {
-  return { supported: true, directory: path.join(projectRoot, ...parts), reason: null };
-}
-
 function unsupportedSkillDirectory(reason: string) {
   return { supported: false, directory: null, reason };
+}
+
+export interface ProjectSkillDirectoryOption {
+  kind: ProjectResourceDirectoryPreference;
+  directory: string;
+}
+
+interface SkillDirectoryParts {
+  private: string[];
+  public?: string[][];
+}
+
+const skillDirectoryPartsByTool: Partial<Record<ToolId, SkillDirectoryParts>> = {
+  codex: { private: [".codex", "skills"], public: [[".agents", "skills"]] },
+  claude: { private: [".claude", "skills"], public: [[".claude", "skills"]] },
+  cline: { private: [".cline", "skills"], public: [[".claude", "skills"]] },
+  opencode: { private: [".opencode", "skills"], public: [[".agents", "skills"], [".claude", "skills"]] },
+  kilo: { private: [".kilo", "skills"], public: [[".agents", "skills"], [".claude", "skills"]] },
+  qwen: { private: [".qwen", "skills"] },
+  kimi: { private: [".kimi-code", "skills"], public: [[".agents", "skills"]] },
+  qoder: { private: [".qoder", "skills"] },
+  codebuddy: { private: [".codebuddy", "skills"] },
+  copilot: { private: [".github", "skills"], public: [[".agents", "skills"], [".claude", "skills"]] },
+  cursor: { private: [".cursor", "skills"], public: [[".agents", "skills"], [".claude", "skills"]] },
+  antigravity: { private: [".agents", "skills"], public: [[".agents", "skills"]] },
+  deepcode: { private: [".deepcode", "skills"] }
+};
+
+export function projectSkillDirectoryOptions(toolId: ToolId, projectRoot: string): ProjectSkillDirectoryOption[] {
+  const parts = skillDirectoryPartsByTool[toolId];
+  if (!parts) return [];
+  const options: ProjectSkillDirectoryOption[] = [
+    { kind: "private", directory: path.join(projectRoot, ...parts.private) },
+    ...(parts.public ?? []).map((publicParts) => ({ kind: "public" as const, directory: path.join(projectRoot, ...publicParts) }))
+  ];
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    const key = option.directory.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function preferredProjectSkillDirectory(toolId: ToolId, projectRoot: string, options: SkillTargetOptions = {}) {
+  const targets = projectSkillDirectoryOptions(toolId, projectRoot);
+  if (targets.length === 0) return unsupportedSkillDirectory("Reasonix 暂无项目级 skill link 目录映射");
+  const preferredKind = options.directoryPreference ?? "private";
+  const target = targets.find((item) => item.kind === preferredKind) ?? targets[0]!;
+  return { supported: true, directory: target.directory, reason: null };
 }
 
 function configuredCommand(config: AppConfig, toolId: ToolId): string {
@@ -71,8 +118,8 @@ export const codexAdapter: ToolAdapter = {
     const codexHome = env.CODEX_HOME ?? path.join(home, ".codex");
     return [existing(codexHome, "sessions"), existing(codexHome, "history.jsonl")];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".codex", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("codex", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -98,8 +145,8 @@ export const claudeAdapter: ToolAdapter = {
     const claudeHome = env.CLAUDE_HOME ?? path.join(home, ".claude");
     return [existing(claudeHome, "projects")];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".claude", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("claude", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -125,8 +172,8 @@ export const clineAdapter: ToolAdapter = {
     const clineHome = env.CLINE_HOME ?? path.join(home, ".cline");
     return [existing(clineHome, "data", "sessions"), existing(clineHome, "data", "tasks")];
   },
-  skillTarget() {
-    return unsupportedSkillDirectory("Cline 暂无项目级 skill link 目录映射");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("cline", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -152,8 +199,8 @@ export const opencodeAdapter: ToolAdapter = {
     const opencodeHome = env.OPENCODE_HOME ?? path.join(home, ".local", "share", "opencode");
     return [existing(opencodeHome, "opencode.db"), existing(opencodeHome, "project")];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".opencode", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("opencode", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -184,8 +231,8 @@ export const kiloAdapter: ToolAdapter = {
     if (env.KILO_DB) return [path.isAbsolute(env.KILO_DB) || env.KILO_DB === ":memory:" ? env.KILO_DB : existing(dataDir, env.KILO_DB)];
     return [existing(dataDir, "kilo.db")];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".kilo", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("kilo", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -211,8 +258,8 @@ export const qwenAdapter: ToolAdapter = {
     const qwenHome = env.QWEN_HOME ?? path.join(home, ".qwen");
     return [existing(qwenHome, "projects"), existing(qwenHome, "sessions")];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".qwen", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("qwen", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -238,8 +285,8 @@ export const kimiAdapter: ToolAdapter = {
     const kimiHome = env.KIMI_CODE_HOME ?? path.join(home, ".kimi-code");
     return [existing(kimiHome, "sessions"), existing(kimiHome, "session_index.jsonl")];
   },
-  skillTarget() {
-    return unsupportedSkillDirectory("Kimi Code 暂无项目级 skill link 目录映射");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("kimi", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -265,8 +312,8 @@ export const qoderAdapter: ToolAdapter = {
     const qoderHome = env.QODER_HOME ?? path.join(home, ".qoder");
     return [existing(qoderHome, "sessions"), existing(qoderHome, "projects")];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".qoder", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("qoder", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -292,8 +339,8 @@ export const codeBuddyAdapter: ToolAdapter = {
     const codebuddyHome = env.CODEBUDDY_HOME ?? path.join(home, ".codebuddy");
     return [existing(codebuddyHome, "sessions"), existing(codebuddyHome, "projects")];
   },
-  skillTarget() {
-    return unsupportedSkillDirectory("CodeBuddy Code 暂无项目级 skill link 目录映射");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("codebuddy", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -319,8 +366,8 @@ export const copilotAdapter: ToolAdapter = {
     const copilotHome = env.COPILOT_HOME ?? path.join(home, ".copilot");
     return [existing(copilotHome, "session-state")];
   },
-  skillTarget() {
-    return unsupportedSkillDirectory("Copilot 暂无项目级 skill link 目录映射");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("copilot", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -346,8 +393,8 @@ export const cursorAdapter: ToolAdapter = {
     const cursorHome = env.CURSOR_HOME ?? path.join(home, ".cursor");
     return [existing(cursorHome, "projects"), existing(cursorHome, "chats")];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".cursor", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("cursor", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -380,8 +427,8 @@ export const antigravityAdapter: ToolAdapter = {
       existing(geminiHome, "conversations")
     ];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".agents", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("antigravity", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -407,8 +454,8 @@ export const deepcodeAdapter: ToolAdapter = {
     const deepcodeHome = env.DEEPCODE_HOME ?? path.join(home, ".deepcode");
     return [existing(deepcodeHome, "projects")];
   },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".deepcode", "skills");
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("deepcode", projectRoot, options);
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);

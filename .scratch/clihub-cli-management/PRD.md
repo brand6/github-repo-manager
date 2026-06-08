@@ -28,7 +28,7 @@ CliHub 内置第一版清单：
 - 功能 CLI：`lark-cli`、`gh`、`playwright`
 - 依赖 CLI：`node`、`npm`、`git`
 
-内置 CLI 的安装渠道由内置清单提供，可以包含 `npm`、`github-release`、`winget`、`choco`、`scoop`、`installer-command` 等。用户可以为内置 CLI 追加新的安装渠道。用户自定义 CLI 如果使用本地路径，必须验证路径存在，只做发现和使用，不支持更新。用户自定义 CLI 如果使用网上安装命令，系统只解析单条可结构化命令；复杂 shell、管道、重定向、`cmd /c`、`powershell -Command`、`curl | sh`、`iwr | iex` 等不由应用自动执行。
+内置 CLI 的安装渠道由内置清单提供，可以包含 `npm`、`github-release`、`winget`、`choco`、`scoop`、`installer-command` 等。用户可以为内置 CLI 追加新的安装渠道。用户自定义 CLI 如果使用本地路径，必须验证路径存在，只做发现和使用，不支持更新。用户自定义 CLI 如果使用网上安装命令，系统优先解析为 `npm`、`winget`、`choco`、`scoop` 等结构化 provider；如果来源是官方文档中的单条安装脚本，例如 PowerShell installer，则可以保存为 `installer-command`，但只能通过可见终端执行，不能作为后台静默安装、更新或自动检查命令执行。复杂 shell、管道、重定向、`cmd /c`、`powershell -Command`、`curl | sh`、`iwr | iex` 等仍不得在后台自动执行。
 
 ## User Stories
 
@@ -52,7 +52,7 @@ CliHub 内置第一版清单：
 18. As a local AI tool user, I want custom CLI registration by online install command, so that official installation instructions can become a managed channel.
 19. As a local AI tool user, I want custom local-path CLIs to be non-updatable, so that CliHub does not invent update behavior for manually installed binaries.
 20. As a local AI tool user, I want custom install commands to be parsed into known providers where possible, so that installation and update commands are structured rather than arbitrary shell.
-21. As a local AI tool user, I want custom installer commands to require a single structured command, so that unsafe pipe or script execution is not hidden inside the app.
+21. As a local AI tool user, I want official installer script channels to be saved and launched in a visible terminal, so that script output is visible and script execution is never hidden inside the app.
 22. As a local AI tool user, I want CliHub to reject custom CLI input that is only a command name, so that every custom CLI has a concrete local path or install source.
 23. As a local AI tool user, I want update checks to run only when I click a button, so that CliHub does not do slow or network-heavy checks in the background.
 24. As a local AI tool user, I want update status to be `up-to-date`, `update-available`, or `unknown`, so that failed checks are distinguishable from current packages.
@@ -91,8 +91,10 @@ CliHub 内置第一版清单：
 - User custom CLI creation supports only local executable path or online install command.
 - A custom CLI cannot be created from a bare command name.
 - Local-path custom CLIs are not updatable.
-- Custom online install commands must parse into a known provider or a single structured installer command.
-- Complex shell commands are rejected for automatic execution.
+- Custom online install commands should parse into a known provider when possible.
+- Official installer script commands can be saved as `installer-command` channels only when the source is trusted and the execution path is visible terminal launch.
+- Complex shell commands are rejected for background automatic execution.
+- `installer-command` channels that use PowerShell, `curl | sh`, `iwr | iex`, or similar script forms are not eligible for silent backend install, update-check, or update operations.
 - Update checks are explicit user actions, either per CLI or for all visible CLIs.
 - Update check status is stored as `up-to-date`, `update-available`, or `unknown`.
 - Updates are same-provider only.
@@ -106,7 +108,7 @@ CliHub 内置第一版清单：
 
 - Tests should verify user-visible behavior at storage, API, provider parsing, discovery, PATH handling, and UI seams.
 - Storage tests should cover built-in CLI records, custom CLI records, channel metadata, discovery status, update status, and recent operation result.
-- Provider parsing tests should cover supported npm, winget, choco, scoop, and installer-command shapes, plus rejected complex shell commands.
+- Provider parsing tests should cover supported npm, winget, choco, scoop, and terminal-only official installer-command shapes, plus rejected background execution of complex shell commands.
 - Discovery tests should cover available commands, missing commands, version success, version failure, unknown provider, and high-confidence provider inference.
 - PATH tests should use temporary environment values and verify user PATH writes are deduplicated and only attempted after managed binary install.
 - API tests should cover listing CliHub, refreshing discovery, adding custom local-path CLI, adding custom install-command CLI, checking updates, installing, and updating.
@@ -121,7 +123,7 @@ CliHub 内置第一版清单：
 - Automatically switching providers for an installed CLI.
 - Background update checks.
 - Unified latest-version comparison beyond explicit provider-specific update checks.
-- Running arbitrary shell scripts, pipes, redirections, `cmd /c`, `powershell -Command`, `curl | sh`, or `iwr | iex` from custom channels.
+- Running arbitrary shell scripts, pipes, redirections, `cmd /c`, `powershell -Command`, `curl | sh`, or `iwr | iex` as hidden backend operations.
 - Provider search from a bare command name.
 - Creating custom CLI from only a command name.
 - Modifying `AppConfig.tools.command`.

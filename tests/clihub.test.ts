@@ -239,6 +239,18 @@ describe("CliHub", () => {
     expect(parseCliHubInstallCommand("choco install gh")).toMatchObject({ provider: "choco", packageId: "gh" });
     expect(parseCliHubInstallCommand("scoop install git")).toMatchObject({ provider: "scoop", packageId: "git" });
     expect(parseCliHubInstallCommand("https://example.test/installer.exe")).toMatchObject({ provider: "installer-command" });
+    expect(parseCliHubInstallCommand("irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex")).toMatchObject({
+      provider: "installer-command",
+      packageId: "codegraph",
+      installCommand: [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex"
+      ]
+    });
 
     expect(() => parseCliHubInstallCommand("codex")).toThrow("不能只填写 command name");
     expect(() => parseCliHubInstallCommand("curl https://example.test/install.sh | sh")).toThrow("复杂 shell");
@@ -398,6 +410,28 @@ describe("CliHub", () => {
 
     const command = await addCustomInstallCommandCli(db, { installCommand: "npm install -g internal-cli" }, { commandRunner: runner });
     expect(command).toMatchObject({ sourceState: "install-command", commandNames: ["internal"] });
+    expect(runner.executed).toContain("npm install -g internal-cli");
+    const powershellInstaller = await addCustomInstallCommandCli(
+      db,
+      { installCommand: "irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex" },
+      { commandRunner: runner }
+    );
+    expect(powershellInstaller).toMatchObject({ sourceState: "install-command", commandNames: ["codegraph"] });
+    expect(runner.executed).toContain("powershell -NoProfile -ExecutionPolicy Bypass -Command irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex");
+    await expect(
+      addCustomInstallCommandCli(
+        db,
+        { installCommand: "npm install -g broken-cli" },
+        {
+          commandRunner: new FakeCliRunner({
+            runs: {
+              "npm install -g broken-cli": { exitCode: 1, stdout: "", stderr: "package not found" }
+            }
+          })
+        }
+      )
+    ).rejects.toThrow("CLI 安装失败");
+    expect(db.listCliHubClis().some((cli) => cli.commandNames.includes("broken"))).toBe(false);
     await expect(addCustomInstallCommandCli(db, { installCommand: "internal-cli" }, { commandRunner: runner })).rejects.toThrow("不能只填写");
 
     db.close();

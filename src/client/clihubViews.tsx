@@ -142,7 +142,7 @@ function CustomCliPanel({
               disabled={busy || !installCommand.trim()}
               onClick={() => onAddInstallCommand(compactInput({ installCommand, displayName, commandName }))}
             >
-              添加安装命令
+              安装并添加 CLI
             </button>
           )}
         </div>

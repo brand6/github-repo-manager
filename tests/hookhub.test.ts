@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   applyHookHubSuiteToProject,
+  convertHookPayloadForTool,
   createHookHubSuite,
   exportHookHubSuite,
   importHookHubSuiteJson,
@@ -24,6 +25,22 @@ afterEach(() => {
 });
 
 describe("HookHub", () => {
+  it("converts Claude command hook payloads to Codex-style hook payloads", () => {
+    const converted = convertHookPayloadForTool(
+      {
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test", timeout: 10 }] }],
+        SessionStart: [{ hooks: [{ type: "command", command: "node hooks/session-start.js", async: false }] }]
+      },
+      "claude",
+      "codex"
+    );
+
+    expect(converted).toEqual({
+      pre: [{ matcher: "Bash", command: "npm test", timeout: 10 }],
+      session_start: [{ command: "node hooks/session-start.js", async: false }]
+    });
+  });
+
   it("stores unique multi-tool suites with stable suite ids and exports without bindings", () => {
     directory = testDir("hookhub-suite-library");
     const db = new AppDatabase(directory);

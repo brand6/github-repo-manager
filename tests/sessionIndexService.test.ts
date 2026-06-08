@@ -179,6 +179,7 @@ function configWithCodexSource(codexSessions: string, directory: string): AppCon
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
-    skillhub: { rootDir: path.join(directory, "skillhub") }
+    skillhub: { rootDir: path.join(directory, "skillhub") },
+    projectResources: { directoryPreference: "private" }
   };
 }

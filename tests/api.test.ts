@@ -186,26 +186,34 @@ describe("API", () => {
       .expect(400);
   });
 
-  it("persists the terminal window mode setting", async () => {
+  it("persists app settings", async () => {
     directory = testDir("api-config-terminal-mode");
     context = new AppContext(directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
     const current = await request(app).get("/api/config").set("x-local-api-token", context.token).expect(200);
     expect(current.body.terminal.mode).toBe("new-window");
+    expect(current.body.projectResources.directoryPreference).toBe("private");
 
     const updated = await request(app)
       .patch("/api/config")
       .set("x-local-api-token", context.token)
-      .send({ terminal: { mode: "per-project" } })
+      .send({ terminal: { mode: "per-project" }, projectResources: { directoryPreference: "public" } })
       .expect(200);
 
     expect(updated.body.terminal.mode).toBe("per-project");
+    expect(updated.body.projectResources.directoryPreference).toBe("public");
     expect(context.config().terminal.mode).toBe("per-project");
+    expect(context.config().projectResources.directoryPreference).toBe("public");
     await request(app)
       .patch("/api/config")
       .set("x-local-api-token", context.token)
       .send({ terminal: { mode: "last" } })
+      .expect(400);
+    await request(app)
+      .patch("/api/config")
+      .set("x-local-api-token", context.token)
+      .send({ projectResources: { directoryPreference: "shared" } })
       .expect(400);
   });
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { isMcpHubTargetToolId, terminalModes } from "../shared/types.js";
+import { isMcpHubTargetToolId, projectResourceDirectoryPreferences, terminalModes } from "../shared/types.js";
 import type {
   AgentHubApplyConflictMode,
   AgentHubDisableMode,
@@ -22,12 +22,16 @@ import type {
   PluginHubCustomPluginInput,
   PluginHubList,
   Project,
+  ProjectCliAction,
+  ProjectCliActionRunResult,
+  ProjectCliActionState,
   ProjectDetail,
   ProjectDetailGroup,
   ProjectAgentApplyResult,
   ProjectAgentState,
   ProjectLocalAgent,
   ProjectLocalAgentMigrationTarget,
+  ProjectResourceDirectoryPreference,
   ProjectHookState,
   ProjectLocalMcpMigrationMode,
   ProjectLocalSkillMigrationMode,
@@ -64,6 +68,7 @@ import { CliHubPage } from "./clihubViews.js";
 import { HookHubPage, ProjectHooksPanel } from "./hookhubViews.js";
 import { McpHubPage, ProjectMcpPanel } from "./mcphubViews.js";
 import { PluginHubPage, ProjectPluginsPanel } from "./pluginhubViews.js";
+import { ProjectCliPanel } from "./projectCliViews.js";
 import { ProjectSkillsPanel, SkillHubPage } from "./skillhubViews.js";
 import "./styles.css";
 
@@ -106,6 +111,10 @@ function App() {
   const [warnings, setWarnings] = useState<ParserWarning[]>([]);
   const [repairCandidates, setRepairCandidates] = useState<ProjectRepairCandidate[]>([]);
   const [projectToolTargets, setProjectToolTargets] = useState<ProjectToolTarget[]>([]);
+  const [projectCliPanelOpen, setProjectCliPanelOpen] = useState(false);
+  const [projectCliState, setProjectCliState] = useState<ProjectCliActionState | null>(null);
+  const [projectCliTargetRoot, setProjectCliTargetRoot] = useState<string | null>(null);
+  const [lastProjectCliResult, setLastProjectCliResult] = useState<ProjectCliActionRunResult | null>(null);
   const [drives, setDrives] = useState<ScanDrive[]>([]);
   const [scanResult, setScanResult] = useState<ScanResultState | null>(null);
   const [query, setQuery] = useState("");
@@ -475,6 +484,10 @@ function App() {
     setWarnings([]);
     setRepairCandidates([]);
     setProjectToolTargets([]);
+    setProjectCliPanelOpen(false);
+    setProjectCliState(null);
+    setProjectCliTargetRoot(null);
+    setLastProjectCliResult(null);
     setProjectSkillPanelOpen(false);
     setProjectSkillState(null);
     setProjectSkillTargetRoot(null);
@@ -729,7 +742,7 @@ function App() {
           onClose={() => setSettingsOpen(false)}
           onSaveDataDir={(dataDir) => void runAction(() => updateWorkingDirectory(dataDir))}
           onSaveTerminalMode={(mode) => void runAction(() => updateTerminalMode(mode))}
-          onSaveSkillHubRoot={(rootDir) => void runAction(() => updateSkillHubRoot(rootDir))}
+          onSaveProjectResourceDirectoryPreference={(preference) => void runAction(() => updateProjectResourceDirectoryPreference(preference))}
           onPickDirectory={pickDirectory}
         />
       ) : null}
@@ -774,6 +787,16 @@ function App() {
           onSourceChange={(source) => void runAction(() => loadRuleCreatePreview(pendingRuleCreateFile, source))}
           onContentChange={setRuleCreateContent}
           onConfirm={() => void runAction(createRuleFileFromDraft)}
+        />
+      ) : null}
+
+      {projectCliPanelOpen ? (
+        <ProjectCliPanel
+          state={projectCliState}
+          busy={busy}
+          lastResult={lastProjectCliResult}
+          onClose={() => setProjectCliPanelOpen(false)}
+          onRunAction={(action) => void runAction(() => runProjectCliAction(action), "project-cli")}
         />
       ) : null}
 
@@ -950,6 +973,7 @@ function App() {
           onApplyRuleSync={(direction) => setPendingRuleSyncDirection(direction)}
           onCreateRuleFile={(file) => void runAction(() => openRuleCreateDialog(file))}
           onOpenRuleFile={(file) => void runAction(() => openRuleFile(file))}
+          onOpenProjectCli={(targetRootPath) => void runAction(() => openProjectCliPanel(selectedProject.id, targetRootPath))}
           onOpenProjectSkills={(targetRootPath) => void runAction(() => openProjectSkillPanel(selectedProject.id, targetRootPath))}
           onOpenProjectAgents={(targetRootPath) => void runAction(() => openProjectAgentPanel(selectedProject.id, targetRootPath))}
           onOpenProjectPlugins={(targetRootPath) => void runAction(() => openProjectPluginPanel(selectedProject.id, targetRootPath))}
@@ -1006,12 +1030,24 @@ function App() {
     setMessage("窗口打开方式已更新");
   }
 
-  async function updateSkillHubRoot(rootDir: string) {
-    const nextConfig = await client.updateConfig({ skillhub: { rootDir } });
+  async function updateProjectResourceDirectoryPreference(preference: ProjectResourceDirectoryPreference) {
+    const nextConfig = await client.updateConfig({ projectResources: { directoryPreference: preference } });
     setConfig(nextConfig);
-    setSkillHubUpdates(null);
-    if (view === "skillhub") await loadSkillHub();
-    setMessage("SkillHub 目录已更新");
+    if (selectedProjectId) {
+      if (projectSkillPanelOpen) {
+        const targetRootPath = projectSkillTargetRoot ?? undefined;
+        setProjectSkillState(await client.projectSkillTargets(selectedProjectId, targetRootPath));
+        setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? targetRootPath));
+      }
+      if (projectAgentPanelOpen) {
+        if (projectAgentHubLoaded) {
+          await refreshProjectAgentPanel();
+        } else {
+          await refreshProjectLocalAgentPanel();
+        }
+      }
+    }
+    setMessage("项目资源目录偏好已更新");
   }
 
   async function refreshProject(projectId: string) {
@@ -1019,6 +1055,7 @@ function App() {
     setMessage(`项目刷新完成：${result.indexedCount} 条，会话跳过 ${result.skippedCount} 条，警告 ${result.warningCount} 条`);
     await loadHome();
     await loadDetail(projectId, query);
+    if (projectCliPanelOpen) await refreshProjectCliPanel();
     if (projectAgentPanelOpen) await refreshProjectAgentPanel();
   }
 
@@ -1448,7 +1485,7 @@ function App() {
   async function addCliHubInstallCommand(input: { installCommand: string; displayName?: string; commandName?: string }) {
     await client.addCliHubInstallCommand(input.installCommand, input.displayName, input.commandName);
     await loadCliHub();
-    setMessage("自定义安装命令 CLI 已添加");
+    setMessage("自定义 CLI 安装完成");
   }
 
   async function addCliHubChannel(cliId: string, installCommand: string) {
@@ -1568,6 +1605,40 @@ function App() {
     setProjectAgentState(null);
     setProjectAgentHubLoaded(false);
     setProjectAgentState(await client.projectLocalAgents(projectId, targetRootPath));
+  }
+
+  async function openProjectCliPanel(projectId: string, targetRootPath: string) {
+    setProjectCliPanelOpen(true);
+    setProjectCliTargetRoot(targetRootPath);
+    setLastProjectCliResult(null);
+    setProjectCliState(await client.projectCliActions(projectId, targetRootPath));
+  }
+
+  async function refreshProjectCliPanel() {
+    if (!selectedProjectId) return;
+    setProjectCliState(await client.projectCliActions(selectedProjectId, projectCliTargetRoot ?? undefined));
+  }
+
+  async function runProjectCliAction(action: ProjectCliAction) {
+    if (!selectedProjectId) return;
+    if (action.requiresConfirmation) {
+      const impact = action.affectedPaths.length ? `\n影响路径：${action.affectedPaths.join("；")}` : "";
+      const confirmed = window.confirm(`确认执行项目 CLI 动作？\ncwd：${action.cwd}\ncommand：${action.commandText}${impact}`);
+      if (!confirmed) {
+        setMessage("已取消项目 CLI 动作");
+        return;
+      }
+    }
+    const result = await client.executeProjectCliAction(selectedProjectId, action.actionId, projectCliTargetRoot ?? undefined, false);
+    setLastProjectCliResult(result);
+    if (result.status === "launched") {
+      setMessage(`已打开终端：${result.commandText}`);
+    } else if (result.status === "success") {
+      setMessage(`项目 CLI 动作完成：${result.label}`);
+    } else {
+      setMessage(`项目 CLI 动作失败：${result.label}`);
+    }
+    await refreshProjectCliPanel();
   }
 
   async function loadProjectAgentHubPanel() {
@@ -2413,7 +2484,7 @@ function SettingsDialog({
   onClose,
   onSaveDataDir,
   onSaveTerminalMode,
-  onSaveSkillHubRoot,
+  onSaveProjectResourceDirectoryPreference,
   onPickDirectory
 }: {
   bootstrap: BootstrapState;
@@ -2422,29 +2493,30 @@ function SettingsDialog({
   onClose: () => void;
   onSaveDataDir: (dataDir: string) => void;
   onSaveTerminalMode: (mode: TerminalMode) => void;
-  onSaveSkillHubRoot: (rootDir: string) => void;
+  onSaveProjectResourceDirectoryPreference: (preference: ProjectResourceDirectoryPreference) => void;
   onPickDirectory: () => Promise<string | null>;
 }) {
   const [terminalMode, setTerminalMode] = useState<TerminalMode>(config?.terminal.mode ?? "new-window");
-  const [pickingTarget, setPickingTarget] = useState<"data-dir" | "skillhub" | null>(null);
+  const [directoryPreference, setDirectoryPreference] = useState<ProjectResourceDirectoryPreference>(config?.projectResources.directoryPreference ?? "private");
+  const [pickingTarget, setPickingTarget] = useState<"data-dir" | null>(null);
   const [pickError, setPickError] = useState("");
 
   useEffect(() => {
     setTerminalMode(config?.terminal.mode ?? "new-window");
   }, [config?.terminal.mode]);
 
-  async function chooseDirectory(target: "data-dir" | "skillhub") {
-    setPickingTarget(target);
+  useEffect(() => {
+    setDirectoryPreference(config?.projectResources.directoryPreference ?? "private");
+  }, [config?.projectResources.directoryPreference]);
+
+  async function chooseWorkingDirectory() {
+    setPickingTarget("data-dir");
     setPickError("");
     try {
       const selected = await onPickDirectory();
       const trimmed = selected?.trim() ?? "";
       if (!trimmed) return;
-      if (target === "data-dir") {
-        onSaveDataDir(trimmed);
-      } else {
-        onSaveSkillHubRoot(trimmed);
-      }
+      onSaveDataDir(trimmed);
     } catch (error) {
       setPickError(error instanceof Error ? error.message : "目录选择失败");
     } finally {
@@ -2474,7 +2546,7 @@ function SettingsDialog({
               className="primary"
               type="button"
               disabled={busy || pickingTarget !== null}
-              onClick={() => void chooseDirectory("data-dir")}
+              onClick={() => void chooseWorkingDirectory()}
             >
               {pickingTarget === "data-dir" ? "选择中..." : "更换工作目录"}
             </button>
@@ -2504,20 +2576,26 @@ function SettingsDialog({
           </div>
         </div>
         <div className="setting-section">
-          <h3>SkillHub</h3>
-          <div className="field current-root">
-            <span>当前 SkillHub 目录</span>
-            <code>{config?.skillhub?.rootDir || "未设置"}</code>
-          </div>
-          <div className="settings-actions">
-            <button
-              className="primary"
-              type="button"
-              disabled={busy || !config || pickingTarget !== null}
-              onClick={() => void chooseDirectory("skillhub")}
-            >
-              {pickingTarget === "skillhub" ? "选择中..." : "选择 SkillHub 目录"}
-            </button>
+          <h3>项目资源目录</h3>
+          <div className="terminal-mode-options project-resource-directory-options" role="radiogroup" aria-label="项目资源目录">
+            {projectResourceDirectoryPreferences.map((preference) => (
+              <label className="terminal-mode-option" key={preference}>
+                <input
+                  type="radio"
+                  name="project-resource-directory-preference"
+                  value={preference}
+                  checked={directoryPreference === preference}
+                  disabled={busy || !config}
+                  onChange={() => {
+                    setDirectoryPreference(preference);
+                    if (preference !== (config?.projectResources.directoryPreference ?? "private")) {
+                      onSaveProjectResourceDirectoryPreference(preference);
+                    }
+                  }}
+                />
+                <span>{projectResourceDirectoryPreferenceLabel(preference)}</span>
+              </label>
+            ))}
           </div>
         </div>
         {pickError ? (
@@ -2929,6 +3007,7 @@ function ProjectDetailView({
   onApplyRuleSync = () => {},
   onCreateRuleFile = () => {},
   onOpenRuleFile = () => {},
+  onOpenProjectCli = () => {},
   onOpenProjectSkills = () => {},
   onOpenProjectAgents = () => {},
   onOpenProjectPlugins = () => {},
@@ -2956,6 +3035,7 @@ function ProjectDetailView({
   onApplyRuleSync?: (direction: RuleSyncDirection) => void;
   onCreateRuleFile?: (file: RuleFileName) => void;
   onOpenRuleFile?: (file: RuleFileName) => void;
+  onOpenProjectCli?: (targetRootPath: string) => void;
   onOpenProjectSkills?: (targetRootPath: string) => void;
   onOpenProjectAgents?: (targetRootPath: string) => void;
   onOpenProjectPlugins?: (targetRootPath: string) => void;
@@ -3038,6 +3118,7 @@ function ProjectDetailView({
           onLaunch={onLaunch}
           onResume={onResume}
           onDeleteSession={onDeleteSession}
+          onOpenProjectCli={onOpenProjectCli}
           onOpenProjectSkills={onOpenProjectSkills}
           onOpenProjectAgents={onOpenProjectAgents}
           onOpenProjectPlugins={onOpenProjectPlugins}
@@ -3400,6 +3481,7 @@ function SessionGroup({
   onLaunch,
   onResume,
   onDeleteSession,
+  onOpenProjectCli,
   onOpenProjectSkills,
   onOpenProjectAgents,
   onOpenProjectPlugins,
@@ -3413,6 +3495,7 @@ function SessionGroup({
   onLaunch: (toolId: ToolId, cwd: string) => void;
   onResume: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
+  onOpenProjectCli: (targetRootPath: string) => void;
   onOpenProjectSkills: (targetRootPath: string) => void;
   onOpenProjectAgents: (targetRootPath: string) => void;
   onOpenProjectPlugins: (targetRootPath: string) => void;
@@ -3431,6 +3514,9 @@ function SessionGroup({
         </div>
         <div className="group-actions">
           <span className="metric-pill strong">{group.sessionCount} 个会话</span>
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectCli(group.fullPath)}>
+            CLI
+          </button>
           <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectSkills(group.fullPath)}>
             技能
           </button>
@@ -3588,6 +3674,10 @@ function terminalModeLabel(mode: TerminalMode): string {
   if (mode === "per-project") return "同项目一个窗口";
   if (mode === "per-tool") return "同工具一个窗口";
   return "每次新窗口";
+}
+
+function projectResourceDirectoryPreferenceLabel(preference: ProjectResourceDirectoryPreference): string {
+  return preference === "public" ? "优先公共目录" : "优先私有目录";
 }
 
 const rootElement = document.getElementById("root");

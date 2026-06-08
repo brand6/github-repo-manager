@@ -76,8 +76,8 @@ const DEFAULT_SKILLHUB_SEEDED_SETTING = "skillhub.default-sources.seeded.v1";
 const MATT_POCOCK_REPO_KEY = "mattpocock-skills";
 const UNITY_MCP_SKILL_FOLDER = "unity-mcp-skill";
 
-export function resolveSkillHubConfig(config: AppConfig, dataDir: string): SkillHubConfig {
-  const rootDir = config.skillhub.rootDir.trim() || path.join(dataDir, "skillhub");
+export function resolveSkillHubConfig(_config: AppConfig, dataDir: string): SkillHubConfig {
+  const rootDir = path.join(dataDir, "skillhub");
   return { rootDir, libraryDir: path.join(rootDir, "library") };
 }
 
@@ -92,6 +92,7 @@ export function listSkillHub(database: AppDatabase, config: AppConfig, dataDir: 
   seedDefaultSkillHubSources(database, config, dataDir);
   assignDirectLibrarySkillsSource(database, resolved.libraryDir);
   assignPluginHubSkillsSourceType(database);
+  repairGitHubRootSkillMetadata(database);
   return {
     config: resolved,
     sources: database.listSkillHubSources(),
@@ -176,7 +177,7 @@ export function importGitHubSource(
   if (!fs.existsSync(scanRoot) || !fs.statSync(scanRoot).isDirectory()) {
     throw new Error(`GitHub source path not found: ${parsed.inputPath ?? "."}`);
   }
-  const discoveries = discoverSkills(scanRoot, parsed.inputPath, parsed.repoKey);
+  const discoveries = discoverSkills(scanRoot, parsed.inputPath, parsed.repoKey, false, true);
   const source = database.upsertSkillHubSource({
     id: sourceId,
     type: "github",
@@ -285,8 +286,8 @@ export function openSkillHubSkill(database: AppDatabase, skillId: string, target
   return openLocalPath(target === "document" ? path.join(skill.libraryPath, "SKILL.md") : skill.libraryPath);
 }
 
-export function listProjectLocalSkillsState(database: AppDatabase, project: Project): ProjectLocalSkillsState {
-  const toolTargets = listProjectToolTargets(database, project);
+export function listProjectLocalSkillsState(database: AppDatabase, project: Project, config?: AppConfig): ProjectLocalSkillsState {
+  const toolTargets = listProjectToolTargets(database, project, config);
   const skillHubSkills = database.listSkillHubSkills();
   const skills: ProjectLocalSkill[] = [];
 
@@ -355,7 +356,7 @@ export function migrateProjectLocalSkill(
   target: ProjectLocalSkillMigrationTarget | null = null
 ): ProjectLocalSkillMigrationResult {
   const resolved = ensureSkillHub(config, dataDir);
-  const localSkill = findProjectLocalSkill(database, project, toolId, folderName);
+  const localSkill = findProjectLocalSkill(database, project, toolId, folderName, config);
   if (!localSkill) throw new Error("未找到本地技能");
   if (localSkill.type !== "local") throw new Error("该技能已经是 SkillHub link");
   if (!localSkill.migratable) throw new Error(localSkill.reason ?? "该技能不能自动迁移");
@@ -475,9 +476,9 @@ export function migrateProjectLocalSkill(
   };
 }
 
-function findProjectLocalSkill(database: AppDatabase, project: Project, toolId: ToolId, folderName: string): ProjectLocalSkill | null {
+function findProjectLocalSkill(database: AppDatabase, project: Project, toolId: ToolId, folderName: string, config?: AppConfig): ProjectLocalSkill | null {
   if (!isSafeSkillFolderName(folderName)) return null;
-  return listProjectLocalSkillsState(database, project).skills.find((skill) => skill.toolId === toolId && skill.folderName === folderName) ?? null;
+  return listProjectLocalSkillsState(database, project, config).skills.find((skill) => skill.toolId === toolId && skill.folderName === folderName) ?? null;
 }
 
 function sameNameSkillHubSkills(database: AppDatabase, folderName: string): SkillHubSkill[] {
@@ -735,6 +736,26 @@ function commitDiscoveredSkills(
       continue;
     }
     if (existing && existing.contentHash === discovery.contentHash) {
+      if (
+        existing.sourceId !== source.id ||
+        existing.sourceType !== source.type ||
+        existing.folderName !== discovery.folderName ||
+        existing.skillName !== discovery.skillName ||
+        existing.description !== discovery.description ||
+        existing.sourceRelativePath !== discovery.sourceRelativePath
+      ) {
+        updated.push(
+          database.upsertSkillHubSkill({
+            ...existing,
+            sourceId: source.id,
+            sourceType: source.type,
+            folderName: discovery.folderName,
+            skillName: discovery.skillName,
+            description: discovery.description,
+            sourceRelativePath: discovery.sourceRelativePath
+          })
+        );
+      }
       continue;
     }
 
@@ -783,12 +804,19 @@ function discoverLocalSkills(sourcePath: string, libraryDir: string): { discover
   return { discoveries: [], skipped };
 }
 
-function discoverSkills(root: string, sourceBaseRelativePath: string | null, libraryPrefix: string, rootIsSingleSkill = false): DiscoveredSkill[] {
+function discoverSkills(
+  root: string,
+  sourceBaseRelativePath: string | null,
+  libraryPrefix: string,
+  rootIsSingleSkill = false,
+  useRootSkillNameAsFolderName = false
+): DiscoveredSkill[] {
   const skills: DiscoveredSkill[] = [];
   const rootResolved = path.resolve(root);
 
   function visit(directory: string): void {
     if (hasSkillMarker(directory)) {
+      const isRootSkill = path.resolve(directory) === rootResolved;
       const relative = rootIsSingleSkill
         ? path.basename(directory)
         : normalizeRelativePath(path.relative(rootResolved, directory)) || path.basename(directory);
@@ -799,7 +827,7 @@ function discoverSkills(root: string, sourceBaseRelativePath: string | null, lib
             ? normalizeRelativePath(sourceBaseRelativePath)
             : normalizeRelativePath(path.join(sourceBaseRelativePath, relative));
       const libraryRelativePath = normalizeRelativePath(path.join(libraryPrefix, relative));
-      skills.push(discoveredSkill(directory, sourceRelativePath, libraryRelativePath));
+      skills.push(discoveredSkill(directory, sourceRelativePath, libraryRelativePath, useRootSkillNameAsFolderName && isRootSkill));
       return;
     }
     for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
@@ -813,11 +841,12 @@ function discoverSkills(root: string, sourceBaseRelativePath: string | null, lib
   return skills;
 }
 
-function discoveredSkill(directory: string, sourceRelativePath: string | null, libraryRelativePath: string): DiscoveredSkill {
+function discoveredSkill(directory: string, sourceRelativePath: string | null, libraryRelativePath: string, useSkillNameAsFolderName = false): DiscoveredSkill {
   const metadata = readSkillMetadata(path.join(directory, "SKILL.md"));
+  const metadataFolderName = metadata.name && isSafeSkillFolderName(metadata.name) ? metadata.name : null;
   return {
     path: directory,
-    folderName: path.basename(directory),
+    folderName: useSkillNameAsFolderName && metadataFolderName ? metadataFolderName : path.basename(directory),
     skillName: metadata.name,
     description: metadata.description,
     sourceRelativePath,
@@ -830,8 +859,9 @@ function readSkillMetadata(skillFile: string): { name: string | null; descriptio
   const text = fs.readFileSync(skillFile, "utf8");
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? "";
   const name = /^name:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim() ?? /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? null;
-  const descriptionLine = /^description:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim();
-  const foldedDescription = /^description:\s*>\s*\r?\n((?:\s+.+\r?\n?)+)/m.exec(frontmatter)?.[1];
+  const descriptionValue = /^description:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim();
+  const descriptionLine = descriptionValue && !/^[>|]\s*$/.test(descriptionValue) ? descriptionValue : null;
+  const foldedDescription = /^description:\s*[>|]\s*\r?\n((?:\s+.+\r?\n?)+)/m.exec(frontmatter)?.[1];
   const description = descriptionLine
     ? stripYamlQuotes(descriptionLine)
     : foldedDescription
@@ -961,7 +991,7 @@ function scanGitHubSource(source: SkillHubSource): { discoveries: DiscoveredSkil
   updateGitHubCheckout(source);
   const revision = gitOutput(["-C", source.checkoutPath, "rev-parse", "HEAD"], false);
   const scanRoot = source.resolvedPath ? path.join(source.checkoutPath, source.resolvedPath) : source.checkoutPath;
-  const discoveries = fs.existsSync(scanRoot) ? discoverSkills(scanRoot, source.resolvedPath, source.repoKey) : [];
+  const discoveries = fs.existsSync(scanRoot) ? discoverSkills(scanRoot, source.resolvedPath, source.repoKey, false, true) : [];
   return {
     discoveries,
     revision,
@@ -1262,6 +1292,30 @@ function assignPluginHubSkillsSourceType(database: AppDatabase): void {
       contentHash: skill.contentHash,
       createdAt: skill.createdAt,
       updatedAt: skill.updatedAt
+    });
+  }
+}
+
+function repairGitHubRootSkillMetadata(database: AppDatabase): void {
+  for (const skill of database.listSkillHubSkills()) {
+    if (skill.sourceType !== "github" || skill.source?.type !== "github" || skill.sourceRelativePath !== null || !skill.source.checkoutPath) continue;
+    const skillFile = path.join(skill.source.checkoutPath, skill.source.resolvedPath ?? "", "SKILL.md");
+    if (!fs.existsSync(skillFile)) continue;
+    const metadata = readSkillMetadata(skillFile);
+    const folderName = metadata.name && isSafeSkillFolderName(metadata.name) ? metadata.name : skill.folderName;
+    if (skill.folderName === folderName && skill.skillName === metadata.name && skill.description === metadata.description) continue;
+    database.upsertSkillHubSkill({
+      id: skill.id,
+      sourceId: skill.sourceId,
+      sourceType: skill.sourceType,
+      folderName,
+      skillName: metadata.name,
+      description: metadata.description,
+      libraryRelativePath: skill.libraryRelativePath,
+      libraryPath: skill.libraryPath,
+      sourceRelativePath: skill.sourceRelativePath,
+      contentHash: skill.contentHash,
+      createdAt: skill.createdAt
     });
   }
 }
